@@ -26,12 +26,10 @@ claude_resume_extension/
     icon16.png
     icon48.png
     icon128.png
-
-Claude_AutoResume_Extension.zip
 ```
 
-The editable extension source is in `claude_resume_extension/`. The ZIP file is
-kept as a packaged copy of the extension.
+The editable extension source is in `claude_resume_extension/`. Install the
+extension from this folder directly; no packaged ZIP is required.
 
 ## Install Locally
 

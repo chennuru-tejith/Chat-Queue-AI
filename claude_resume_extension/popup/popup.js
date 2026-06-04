@@ -244,8 +244,26 @@ chrome.storage.local.get("savedSettings", ({ savedSettings }) => {
   }
 });
 
+// ── Auto-detect timer from active Claude tab ─────────────────────────
+function autoDetectTimer() {
+  chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+    const tab = tabs[0];
+    if (!tab || !tab.url?.includes("claude.ai")) return;
+    chrome.tabs.sendMessage(tab.id, { type: "GET_RESET_INFO" }, resp => {
+      if (chrome.runtime.lastError || !resp) return;
+      if (resp.mins) {
+        $("resetMinutes").value = resp.mins;
+        const hint = document.querySelector(".time-hint");
+        if (hint) hint.textContent = `Auto-detected: ${resp.display}`;
+        hint?.classList?.add("green");
+      }
+    });
+  });
+}
+
 // ── Init ──────────────────────────────────────────────────────────────
 updateUI();
+autoDetectTimer();
 
 // Auto-refresh status every 5 seconds when popup is open
 setInterval(() => {

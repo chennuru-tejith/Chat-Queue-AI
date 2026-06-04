@@ -1,90 +1,52 @@
-// Claude AutoResume — Background Service Worker (fixed)
+// Claude AutoResume — Background Service Worker v4
 
-const ALARM_MONITOR  = "ar-monitor";   // fires every minute while monitoring
-const ALARM_WAIT_END = "ar-wait-end";  // fires once when wait period expires
-const MAX_ATTEMPTS   = 60;             // give up after 60 retries (~60 min)
+const ALARM = "ar-monitor";
+const MAX_ATTEMPTS = 120;
 
-// ── Message router ────────────────────────────────────────────────────
+// ── Messages ──────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type === "START_RESUME") {
-    startResume(msg.data);
-    sendResponse({ ok: true });
-    return;
-  }
-  if (msg.type === "STOP_RESUME") {
-    stopResume();
-    sendResponse({ ok: true });
-    return;
-  }
-  if (msg.type === "GET_STATUS") {
-    chrome.storage.local.get("resumeState", (d) => {
-      sendResponse({ state: d.resumeState || null });
-    });
-    return true; // async
-  }
-  if (msg.type === "LIMIT_DETECTED") {
-    onLimitDetected();
-    return;
-  }
-  if (msg.type === "SEND_RESULT") {
-    addLog(msg.success ? `✓ ${msg.detail}` : `✗ ${msg.detail}`);
-    sendResponse({ ok: true });
-    return;
-  }
-  // OPEN_POPUP: open the extension popup programmatically
-  if (msg.type === "OPEN_POPUP") {
-    // openPopup() requires user gesture — silently fails from content script
-    // Best we can do: focus the extension icon badge (no reliable cross-platform way)
-    // Just update the badge to draw attention
-    chrome.action.setBadgeText({ text: "!" });
-    chrome.action.setBadgeBackgroundColor({ color: "#a78bfa" });
-    setTimeout(() => chrome.action.setBadgeText({ text: "" }), 4000);
-    return;
+  if (msg.type === "START_RESUME")   { startResume(msg.data);     sendResponse({ ok: true }); }
+  if (msg.type === "STOP_RESUME")    { stopResume();               sendResponse({ ok: true }); }
+  if (msg.type === "LIMIT_DETECTED") { onLimitDetected();          sendResponse({ ok: true }); }
+  if (msg.type === "GET_STATUS")     {
+    chrome.storage.local.get("resumeState", d => sendResponse({ state: d.resumeState || null }));
+    return true;
   }
   return true;
 });
 
 // ── Start ─────────────────────────────────────────────────────────────
 function startResume(data) {
-  // Validate URL format
-  if (!data.chatUrl || !data.chatUrl.startsWith("https://claude.ai/chat/")) {
-    console.error("AutoResume: invalid chatUrl", data.chatUrl);
-    return;
-  }
+  if (!data?.chatUrl?.startsWith("https://claude.ai/chat/")) return;
+
   const state = {
-    active:           true,
-    chatUrl:          data.chatUrl,
-    prompt:           data.prompt,
-    resetMinutes:     data.resetMinutes  || 180,
-    checkIntervalSec: data.checkInterval || 60,
-    status:           "monitoring",
-    startedAt:        Date.now(),
-    limitDetectedAt:  null,
-    attempts:         0,
+    active: true,
+    chatUrl: data.chatUrl,
+    prompt: data.prompt,
+    resetMinutes: data.resetMinutes || 180,
+    checkInterval: data.checkInterval || 60,
+    status: "monitoring",
+    startedAt: Date.now(),
+    limitDetectedAt: null,
+    attempts: 0,
     log: [`[${ts()}] AutoResume started. Monitoring for usage limit...`]
   };
 
   chrome.storage.local.set({ resumeState: state }, () => {
-    chrome.alarms.clearAll(() => {
-      chrome.alarms.create(ALARM_MONITOR, { periodInMinutes: 1 });
+    chrome.alarms.clear(ALARM, () => {
+      // Alarm fires every minute for monitoring
+      chrome.alarms.create(ALARM, { periodInMinutes: 1 });
     });
-    addLog("Monitoring active. Waiting for limit banner...");
-    // Check immediately — don't wait up to 60s for first alarm tick
-    ensureClaudeTab(state.chatUrl, (tabId) => {
-      if (tabId === null) return;
-      setTimeout(() => {
-        chrome.tabs.sendMessage(tabId, { type: "CHECK_LIMIT" }, (resp) => {
-          if (chrome.runtime.lastError) return;
-          if (resp?.limited) onLimitDetected();
-        });
-      }, 2000); // wait 2s for page to settle
-    });
+    broadcast(state);
+
+    // Check immediately — don't wait 60s
+    setTimeout(() => checkImmediately(), 2000);
   });
 }
 
 // ── Stop ──────────────────────────────────────────────────────────────
 function stopResume() {
-  chrome.alarms.clearAll();
+  chrome.alarms.clear(ALARM);
   updateState(s => {
     s.active = false;
     s.status = "stopped";
@@ -92,181 +54,196 @@ function stopResume() {
   }, "Stopped by user.");
 }
 
-// ── Limit detected by content script ─────────────────────────────────
-function onLimitDetected() {
-  chrome.storage.local.get("resumeState", (d) => {
+// ── Alarm tick ────────────────────────────────────────────────────────
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name !== ALARM) return;
+  chrome.storage.local.get("resumeState", d => {
     const s = d.resumeState;
-    if (!s || !s.active || s.limitDetectedAt) return; // already handling
+    if (!s?.active) { chrome.alarms.clear(ALARM); return; }
 
-    s.limitDetectedAt = Date.now();
-    s.status = "waiting";
-    s.log = s.log || [];
-    s.log.push(`[${ts()}] Usage limit detected! Waiting ${s.resetMinutes} min...`);
-    chrome.storage.local.set({ resumeState: s });
+    if (s.status === "monitoring") {
+      // Ask the Claude tab if limit is active
+      checkImmediately();
+    } else if (s.status === "waiting") {
+      const elapsed = (Date.now() - s.limitDetectedAt) / 60000;
+      const rem = s.resetMinutes - elapsed;
+      if (rem <= 0) {
+        // Time is up — start checking
+        updateState(st => { st.status = "checking"; return st; },
+          `Wait complete. Starting checks...`);
+      } else {
+        addLog(`Waiting... ${Math.ceil(rem)} min remaining`);
+      }
+    } else if (s.status === "checking") {
+      attemptSend(s);
+    }
+  });
+});
 
-    // FIX 2: Schedule wait-end with chrome.alarms (survives SW restarts)
-    chrome.alarms.create(ALARM_WAIT_END, {
-      delayInMinutes: s.resetMinutes
+// ── Immediately check limit state ────────────────────────────────────
+function checkImmediately() {
+  chrome.storage.local.get("resumeState", d => {
+    const s = d.resumeState;
+    if (!s?.active) return;
+
+    findOrOpenTab(s.chatUrl, tabId => {
+      if (!tabId) { addLog("Could not find/open Claude tab"); return; }
+
+      chrome.tabs.sendMessage(tabId, { type: "CHECK_LIMIT" }, resp => {
+        if (chrome.runtime.lastError || !resp) return;
+
+        if (resp.limited) {
+          onLimitDetected();
+        } else if (resp.canType && s.status === "checking") {
+          // Limit has cleared! Send now
+          attemptSend(s);
+        } else if (resp.canType && s.status === "monitoring") {
+          addLog("Monitoring — limit not yet active, watching...");
+        }
+      });
     });
   });
 }
 
-// ── Alarms ────────────────────────────────────────────────────────────
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === ALARM_WAIT_END) {
-    // Wait period is over — start checking
-    updateState(s => {
-      if (s && s.active && s.status === "waiting") {
-        s.status = "checking";
-        return s;
-      }
-      return null;
-    }, "Wait complete. Now checking if limit has reset...");
-    return;
-  }
+// ── Limit detected ────────────────────────────────────────────────────
+function onLimitDetected() {
+  chrome.storage.local.get("resumeState", d => {
+    const s = d.resumeState;
+    if (!s?.active || s.limitDetectedAt) return; // already handling
 
-  if (alarm.name === ALARM_MONITOR) {
-    chrome.storage.local.get("resumeState", (d) => {
-      const s = d.resumeState;
-      if (!s || !s.active) { chrome.alarms.clearAll(); return; }
+    updateState(st => {
+      st.limitDetectedAt = Date.now();
+      st.status = "waiting";
+      return st;
+    }, `Usage limit detected! Waiting ${s.resetMinutes} min before checking...`);
 
-      if (s.status === "monitoring") {
-        // Ensure Claude tab is open and check for limit
-        ensureClaudeTab(s.chatUrl, (tabId) => {
-          if (tabId === null) return;
-          chrome.tabs.sendMessage(tabId, { type: "CHECK_LIMIT" }, (resp) => {
-            if (chrome.runtime.lastError) return;
-            if (resp?.limited) onLimitDetected();
-          });
-        });
-        return;
-      }
-
-      if (s.status === "checking") {
-        // FIX 5: Respect user's checkIntervalSec setting
-        // We fire every minute but only actually attempt after checkIntervalSec
-        const secSinceDetected = (Date.now() - (s.lastAttemptAt || s.limitDetectedAt || 0)) / 1000;
-        if (s.attempts > 0 && secSinceDetected < (s.checkIntervalSec - 5)) {
-          return; // not time yet
-        }
-
-        // FIX 11: Cap maximum attempts
-        if (s.attempts >= MAX_ATTEMPTS) {
-          updateState(st => { st.status = "failed"; st.active = false; return st; },
-            `Gave up after ${MAX_ATTEMPTS} attempts. Please check Claude manually.`);
-          chrome.alarms.clearAll();
-          return;
-        }
-
-        attemptSend(s);
-      }
-
-      if (s.status === "waiting") {
-        // FIX 8: If we somehow ended up here (SW restarted, alarm-wait-end missed)
-        // check if the wait time has actually passed
-        if (s.limitDetectedAt) {
-          const elapsed = (Date.now() - s.limitDetectedAt) / 60000;
-          if (elapsed >= s.resetMinutes) {
-            updateState(st => { st.status = "checking"; return st; },
-              "Wait time elapsed (recovered from SW restart). Checking now...");
-          } else {
-            const rem = Math.ceil(s.resetMinutes - elapsed);
-            addLog(`Waiting for reset... ${rem} min remaining.`);
-          }
-        }
-      }
+    // After resetMinutes, switch to checking
+    const delay = (s.resetMinutes || 180) * 60 * 1000;
+    // Use alarm for the wait (survives SW sleep)
+    chrome.alarms.clear(ALARM, () => {
+      // During wait: alarm every 2 min to update progress
+      chrome.alarms.create(ALARM, { periodInMinutes: 2 });
+      // After wait: create a one-shot alarm to switch to checking
+      chrome.alarms.create("ar-wait-end", { delayInMinutes: s.resetMinutes || 180 });
     });
-  }
+  });
+}
+
+// ── Wait end alarm ────────────────────────────────────────────────────
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name !== "ar-wait-end") return;
+  chrome.storage.local.get("resumeState", d => {
+    const s = d.resumeState;
+    if (!s?.active || s.status !== "waiting") return;
+    updateState(st => { st.status = "checking"; return st; },
+      "Wait complete. Now checking every minute...");
+    // Switch alarm back to 1 min for checking
+    chrome.alarms.clear(ALARM, () => {
+      chrome.alarms.create(ALARM, { periodInMinutes: 1 });
+    });
+  });
 });
 
 // ── Attempt to send ───────────────────────────────────────────────────
 function attemptSend(state) {
-  // FIX 2: Save state BEFORE incrementing, then write back atomically
-  chrome.storage.local.get("resumeState", (d) => {
-    const s = d.resumeState;
-    if (!s || !s.active) return;
+  const attempt = (state.attempts || 0) + 1;
+  updateState(s => { s.attempts = attempt; return s; });
+  addLog(`Check #${attempt} — testing if limit has reset...`);
 
-    s.attempts     = (s.attempts || 0) + 1;
-    s.lastAttemptAt = Date.now();
-    s.log = s.log || [];
-    s.log.push(`[${ts()}] Attempt #${s.attempts} — checking Claude...`);
-    if (s.log.length > 50) s.log = s.log.slice(-50);
-
-    chrome.storage.local.set({ resumeState: s }, () => {
-      // FIX 7: Only use the exact target tab, never a fallback
-      findExactTab(s.chatUrl, (tabId) => {
-        if (tabId === null) {
-          // Open tab if not present
-          chrome.tabs.create({ url: s.chatUrl, active: false }, (tab) => {
-            setTimeout(() => tryInjectAndSend(tab.id, s.prompt), 8000);
-          });
-        } else {
-          chrome.tabs.update(tabId, { url: s.chatUrl }, () => {
-            setTimeout(() => tryInjectAndSend(tabId, s.prompt), 8000);
-          });
-        }
-      });
-    });
-  });
-}
-
-function tryInjectAndSend(tabId, prompt) {
-  chrome.tabs.sendMessage(tabId, { type: "CHECK_AND_SEND", prompt }, (resp) => {
-    if (chrome.runtime.lastError) {
-      addLog("Content script unreachable. Retrying next cycle...");
+  findOrOpenTab(state.chatUrl, tabId => {
+    if (!tabId) {
+      addLog("Could not reach Claude tab. Will retry next cycle.");
       return;
     }
-    if (resp?.sent) {
-      chrome.storage.local.get("resumeState", (d) => {
-        const s = d.resumeState || {};
-        s.status = "done";
-        s.active = false;
-        s.log = s.log || [];
-        s.log.push(`[${ts()}] ✓ Prompt sent successfully!`);
-        chrome.storage.local.set({ resumeState: s });
-        chrome.alarms.clearAll();
-        chrome.notifications.create({
-          type: "basic",
-          iconUrl: "icons/icon48.png",
-          title: "Claude AutoResume",
-          message: "Your prompt was sent! Claude is responding."
+
+    // First reload the page to get a fresh limit state
+    chrome.tabs.reload(tabId, { bypassCache: true }, () => {
+      setTimeout(() => {
+        chrome.tabs.sendMessage(tabId, { type: "CHECK_LIMIT" }, resp => {
+          if (chrome.runtime.lastError || !resp) {
+            addLog("Content script not responding. Retrying...");
+            return;
+          }
+
+          if (resp.limited) {
+            addLog(`Still limited. Next check in 1 min...`);
+            return; // alarm will retry
+          }
+
+          if (resp.canType) {
+            // Limit has reset! Send the prompt
+            addLog("Limit has RESET! Sending prompt now...");
+            updateState(s => { s.status = "sending"; return s; });
+
+            chrome.tabs.sendMessage(tabId, {
+              type: "CHECK_AND_SEND",
+              prompt: state.prompt
+            }, result => {
+              if (chrome.runtime.lastError || !result) {
+                addLog("Send failed — will retry next cycle.");
+                updateState(s => { s.status = "checking"; return s; });
+                return;
+              }
+
+              if (result.sent) {
+                addLog(`✓ Prompt sent successfully! (${result.method || "ok"})`);
+                updateState(s => { s.status = "done"; s.active = false; return s; });
+                chrome.alarms.clear(ALARM);
+                chrome.alarms.clear("ar-wait-end");
+
+                // Notification
+                chrome.notifications.create({
+                  type: "basic",
+                  iconUrl: "icons/icon48.png",
+                  title: "Claude AutoResume ✓",
+                  message: "Your prompt was sent! Claude is responding."
+                });
+
+                // Focus tab
+                chrome.tabs.update(tabId, { active: true });
+
+              } else if (result.reason === "still_limited") {
+                addLog("Page says still limited. Retrying...");
+                updateState(s => { s.status = "checking"; return s; });
+              } else {
+                addLog(`Send failed: ${result.reason}. Retrying...`);
+                updateState(s => { s.status = "checking"; return s; });
+              }
+            });
+          } else {
+            addLog("Cannot type yet. Still waiting...");
+          }
         });
-        chrome.tabs.update(tabId, { active: true });
-      });
-    } else if (resp?.stillLimited) {
-      addLog("Still rate limited. Retrying...");
-    } else {
-      addLog(`Send failed: ${resp?.reason || "unknown"}. Retrying...`);
-    }
-  });
-}
-
-// ── Tab helpers ───────────────────────────────────────────────────────
-
-// FIX 7: Only match the exact target chat URL — never fallback to random tab
-function findExactTab(chatUrl, callback) {
-  const convId = chatUrl.split("/").pop();
-  chrome.tabs.query({ url: "https://claude.ai/*" }, (tabs) => {
-    const match = tabs.find(t =>
-      t.url === chatUrl || (convId && t.url.includes(convId))
-    );
-    callback(match ? match.id : null);
-  });
-}
-
-// For monitoring: open chat if not open, but don't navigate existing tabs
-function ensureClaudeTab(chatUrl, callback) {
-  findExactTab(chatUrl, (tabId) => {
-    if (tabId !== null) { callback(tabId); return; }
-    chrome.tabs.create({ url: chatUrl, active: false }, (tab) => {
-      setTimeout(() => callback(tab.id), 3000);
+      }, 5000); // wait 5s after reload for page to settle
     });
   });
+
+  // Give up after MAX_ATTEMPTS
+  if (attempt >= MAX_ATTEMPTS) {
+    addLog(`✗ Gave up after ${MAX_ATTEMPTS} attempts.`);
+    updateState(s => { s.active = false; s.status = "failed"; return s; });
+    chrome.alarms.clear(ALARM);
+    chrome.alarms.clear("ar-wait-end");
+  }
 }
 
-// ── State helper — atomic read-modify-write ───────────────────────────
+// ── Find or open Claude tab ───────────────────────────────────────────
+function findOrOpenTab(chatUrl, callback) {
+  chrome.tabs.query({ url: "https://claude.ai/*" }, tabs => {
+    // Prefer exact chat URL
+    const exact = tabs.find(t => t.url === chatUrl ||
+      t.url.includes(chatUrl.split("/").pop()));
+    if (exact) { callback(exact.id); return; }
+    // Any claude tab
+    if (tabs[0]) { callback(tabs[0].id); return; }
+    // Open new tab
+    chrome.tabs.create({ url: chatUrl, active: false }, t => callback(t.id));
+  });
+}
+
+// ── State helpers ─────────────────────────────────────────────────────
 function updateState(mutator, logMsg) {
-  chrome.storage.local.get("resumeState", (d) => {
+  chrome.storage.local.get("resumeState", d => {
     const s = d.resumeState;
     if (!s) return;
     const updated = mutator(s);
@@ -274,9 +251,11 @@ function updateState(mutator, logMsg) {
     if (logMsg) {
       updated.log = updated.log || [];
       updated.log.push(`[${ts()}] ${logMsg}`);
-      if (updated.log.length > 50) updated.log = updated.log.slice(-50);
+      if (updated.log.length > 80) updated.log = updated.log.slice(-80);
     }
-    chrome.storage.local.set({ resumeState: updated });
+    chrome.storage.local.set({ resumeState: updated }, () => {
+      broadcast(updated);
+    });
   });
 }
 
@@ -284,8 +263,18 @@ function addLog(msg) {
   updateState(s => {
     s.log = s.log || [];
     s.log.push(`[${ts()}] ${msg}`);
-    if (s.log.length > 50) s.log = s.log.slice(-50);
+    if (s.log.length > 80) s.log = s.log.slice(-80);
     return s;
+  });
+}
+
+function broadcast(state) {
+  if (!state) return;
+  chrome.tabs.query({ url: "https://claude.ai/*" }, tabs => {
+    for (const tab of tabs) {
+      chrome.tabs.sendMessage(tab.id, { type: "STATE_UPDATED", state },
+        () => chrome.runtime.lastError);
+    }
   });
 }
 
