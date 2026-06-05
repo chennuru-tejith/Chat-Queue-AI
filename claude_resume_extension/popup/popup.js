@@ -66,7 +66,8 @@ $("btnStop").addEventListener("click", () => {
 
 // ── Render status tab ─────────────────────────────────────────────────
 function renderStatus() {
-  chrome.runtime.sendMessage({ type: "GET_STATUS" }, ({ state }) => {
+  chrome.runtime.sendMessage({ type: "GET_STATUS" }, resp => {
+    const state = resp?.state;
     const el = $("statusContent");
 
     if (!state || (!state.active && state.status !== "done" && state.status !== "failed")) {
@@ -164,7 +165,8 @@ function renderStatus() {
 
 // ── Render log tab ────────────────────────────────────────────────────
 function renderLog() {
-  chrome.runtime.sendMessage({ type: "GET_STATUS" }, ({ state }) => {
+  chrome.runtime.sendMessage({ type: "GET_STATUS" }, resp => {
+    const state = resp?.state;
     const box = $("logBox");
     if (!state || !state.log || state.log.length === 0) {
       box.innerHTML = `<span class="log-line">No log entries yet.</span>`;
@@ -187,7 +189,8 @@ function renderLog() {
 
 // ── Update overall UI state ───────────────────────────────────────────
 function updateUI() {
-  chrome.runtime.sendMessage({ type: "GET_STATUS" }, ({ state }) => {
+  chrome.runtime.sendMessage({ type: "GET_STATUS" }, resp => {
+    const state = resp?.state;
     const pill    = document.querySelector(".status-pill");
     const pillTxt = $("headerPillText");
     const btnStart = $("btnStart");
