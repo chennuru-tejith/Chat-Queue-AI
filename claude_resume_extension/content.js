@@ -132,43 +132,104 @@ function getSendBtn() {
 }
 
 // ── Auto-read reset timer ─────────────────────────────────────────────
-function getResetInfo() {
-  try {
-    // First try reading from the actual session bar element (most reliable)
-    const allText = Array.from(document.querySelectorAll("*"))
-      .filter(el => el.childElementCount === 0 && el.textContent.includes("resets in"))
-      .map(el => el.textContent);
-    
-    const text = allText.length > 0 ? allText.join(" ") : document.body.innerText;
-    // Matches: "resets in 4h 34m", "resets in 2h", "resets in 47m", "resets in 3d 14h"
-    const patterns = [
-      /resets\s+in\s+(\d+)d\s+(\d+)h/i,   // Xd Xh
-      /resets\s+in\s+(\d+)h\s+(\d+)m/i,   // Xh Xm
-      /resets\s+in\s+(\d+)h/i,             // Xh only
-      /resets\s+in\s+(\d+)m/i,             // Xm only
-      /try\s+again\s+in\s+(\d+)h\s+(\d+)m/i,
-      /try\s+again\s+in\s+(\d+)m/i,
-    ];
+function parseResetTime(text) {
+  const patterns = [
+    /resets\s+in\s+(\d+)d\s+(\d+)h/i,
+    /resets\s+in\s+(\d+)h\s+(\d+)m/i,
+    /resets\s+in\s+(\d+)h/i,
+    /resets\s+in\s+(\d+)m/i,
+    /try\s+again\s+in\s+(\d+)h\s+(\d+)m/i,
+    /try\s+again\s+in\s+(\d+)m/i,
+  ];
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (!m) continue;
+    let mins = 0;
+    const src = p.source;
+    if (src.includes("\\d+)d")) {
+      mins = parseInt(m[1]) * 24 * 60 + parseInt(m[2] || 0) * 60;
+    } else if (src.includes("\\d+)h\\s+(\\d+)m")) {
+      mins = parseInt(m[1]) * 60 + parseInt(m[2] || 0);
+    } else if (src.includes("\\d+)h")) {
+      mins = parseInt(m[1]) * 60;
+    } else {
+      mins = parseInt(m[1]);
+    }
+    if (mins > 0) {
+      const raw = m[0].replace(/^(resets|try again)\s+in\s+/i, "").trim();
+      return { mins, display: raw };
+    }
+  }
+  return null;
+}
 
-    for (const p of patterns) {
-      const m = text.match(p);
-      if (!m) continue;
-      let mins = 0;
-      const src = p.source;
-      if (src.includes("\\d+)d")) {
-        mins = parseInt(m[1]) * 24 * 60 + parseInt(m[2] || 0) * 60;
-      } else if (src.includes("\\d+)h\\s+(\\d+)m")) {
-        mins = parseInt(m[1]) * 60 + parseInt(m[2] || 0);
-      } else if (src.includes("\\d+)h")) {
-        mins = parseInt(m[1]) * 60;
-      } else {
-        mins = parseInt(m[1]);
+function getUsageInfo() {
+  const info = { session: null, weekly: null };
+  try {
+    const leafEls = Array.from(document.querySelectorAll("*"))
+      .filter(el => el.childElementCount === 0 && el.textContent.trim().length > 0);
+
+    for (const el of leafEls) {
+      const t = el.textContent.trim();
+
+      // Match "Session: X%" or "Session: X% · resets in ..."
+      const sessionMatch = t.match(/session[:\s]+(\d+)%/i);
+      if (sessionMatch) {
+        info.session = info.session || {};
+        info.session.pct = parseInt(sessionMatch[1]);
+        const resetPart = parseResetTime(t);
+        if (resetPart) {
+          info.session.reset = resetPart;
+        }
       }
-      if (mins > 0) {
-        const raw = m[0].replace(/^(resets|try again)\s+in\s+/i, "").trim();
-        return { mins, display: raw };
+
+      // Match "Weekly: X%" or "Weekly: X% · resets in ..."
+      const weeklyMatch = t.match(/weekly[:\s]+(\d+)%/i);
+      if (weeklyMatch) {
+        info.weekly = info.weekly || {};
+        info.weekly.pct = parseInt(weeklyMatch[1]);
+        const resetPart = parseResetTime(t);
+        if (resetPart) {
+          info.weekly.reset = resetPart;
+        }
       }
     }
+
+    // Also scan for standalone "resets in" near session/weekly labels
+    if (info.session && !info.session.reset) {
+      for (const el of leafEls) {
+        const t = el.textContent.trim();
+        if (/resets\s+in/i.test(t) && !(/weekly/i.test(t))) {
+          const r = parseResetTime(t);
+          if (r && r.mins < 24 * 60) { // Session resets are usually < 24h
+            info.session.reset = r;
+            break;
+          }
+        }
+      }
+    }
+  } catch {}
+  return info;
+}
+
+function getResetInfo() {
+  try {
+    const usage = getUsageInfo();
+
+    // Prioritize session reset (the one that actually blocks you)
+    if (usage.session?.reset) {
+      return { mins: usage.session.reset.mins, display: usage.session.reset.display, source: "session" };
+    }
+
+    // Fall back to "try again in" text anywhere on page (limit banner)
+    const body = document.body.innerText;
+    const bannerReset = parseResetTime(body);
+    if (bannerReset && bannerReset.mins < 24 * 60) {
+      return { mins: bannerReset.mins, display: bannerReset.display, source: "banner" };
+    }
+
+    // Do NOT return the weekly reset — it's not useful for AutoResume
+    return null;
   } catch {}
   return null;
 }
@@ -683,6 +744,14 @@ function openPanel() {
           <span class="ar-task-val muted" id="tk-status">—</span>
         </div>
         <div class="ar-task-row">
+          <span class="ar-task-key">Session</span>
+          <span class="ar-task-val muted" id="tk-session">—</span>
+        </div>
+        <div class="ar-task-row">
+          <span class="ar-task-key">Weekly</span>
+          <span class="ar-task-val muted" id="tk-weekly">—</span>
+        </div>
+        <div class="ar-task-row">
           <span class="ar-task-key">Prompt</span>
           <span class="ar-task-val muted" id="tk-prompt">—</span>
         </div>
@@ -691,7 +760,7 @@ function openPanel() {
           <span class="ar-task-val muted" id="tk-url">—</span>
         </div>
         <div class="ar-task-row">
-          <span class="ar-task-key">Resets in</span>
+          <span class="ar-task-key">Session Reset</span>
           <span class="ar-task-val muted" id="tk-time">—</span>
         </div>
         <div class="ar-task-row">
@@ -935,6 +1004,8 @@ function updateStatusTab(state) {
   // Task summary
   const tk = {
     status:   p.querySelector("#tk-status"),
+    session:  p.querySelector("#tk-session"),
+    weekly:   p.querySelector("#tk-weekly"),
     prompt:   p.querySelector("#tk-prompt"),
     url:      p.querySelector("#tk-url"),
     time:     p.querySelector("#tk-time"),
@@ -950,11 +1021,38 @@ function updateStatusTab(state) {
   if (tk.url)      tk.url.textContent      = state.chatUrl  ? ("…/" + state.chatUrl.split("/").pop().slice(0,12) + "…") : "—";
   if (tk.attempts) tk.attempts.textContent = state.attempts || "0";
 
-  // Auto-read reset time from page
+  // Live usage info from Claude's UI
+  const usage = getUsageInfo();
+
+  if (tk.session) {
+    if (usage.session) {
+      const pct = usage.session.pct;
+      const resetTxt = usage.session.reset ? ` · resets ${usage.session.reset.display}` : "";
+      tk.session.textContent = `${pct}%${resetTxt}`;
+      tk.session.className = pct >= 80 ? "ar-task-val yellow" : pct >= 100 ? "ar-task-val err" : "ar-task-val green";
+    } else {
+      tk.session.textContent = "—";
+      tk.session.className = "ar-task-val muted";
+    }
+  }
+
+  if (tk.weekly) {
+    if (usage.weekly) {
+      const pct = usage.weekly.pct;
+      const resetTxt = usage.weekly.reset ? ` · resets ${usage.weekly.reset.display}` : "";
+      tk.weekly.textContent = `${pct}%${resetTxt}`;
+      tk.weekly.className = pct >= 80 ? "ar-task-val yellow" : "ar-task-val muted";
+    } else {
+      tk.weekly.textContent = "—";
+      tk.weekly.className = "ar-task-val muted";
+    }
+  }
+
+  // Session reset time (used for AutoResume countdown)
   const ri = getResetInfo();
   if (tk.time) {
     if (ri) {
-      tk.time.textContent  = ri.display;
+      tk.time.textContent  = `${ri.display} (${ri.source})`;
       tk.time.className    = "ar-task-val yellow";
     } else if (state.status === "done") {
       tk.time.textContent = "Reset!";
