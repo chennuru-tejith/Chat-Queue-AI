@@ -503,7 +503,8 @@ function injectStyles() {
 
 // ── Inject button into Claude header ─────────────────────────────────
 function shouldShowBtn() {
-  return window.location.href.includes("/chat/");
+  const url = window.location.href;
+  return !url.includes("/login") && !url.includes("/signup");
 }
 
 function injectBtn() {
