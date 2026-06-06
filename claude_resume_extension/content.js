@@ -573,7 +573,11 @@ function injectBtn() {
     document.getElementById("ar-btn")?.remove();
     return;
   }
-  if (document.getElementById("ar-btn")) return;
+  // Check if button exists AND is still connected to the DOM
+  // (SPA navigation can detach elements without removing them from memory)
+  const existing = document.getElementById("ar-btn");
+  if (existing && existing.isConnected) return;
+  if (existing && !existing.isConnected) existing.remove();
 
   const btn = document.createElement("button");
   btn.id    = "ar-btn";
@@ -590,30 +594,45 @@ function injectBtn() {
   btn.onclick = e => { e.stopPropagation(); togglePanel(); };
 
   function tryInsert() {
-    // Claude's ghost icon has a specific SVG path we can target
-    // It's an SVG with a ghost-like shape in the top-right corner
-    // Strategy 1: find all buttons in the viewport top-right quadrant
     const allBtns = Array.from(document.querySelectorAll("button"));
     const vpW = window.innerWidth;
 
-    // Filter to buttons in top bar (top 60px) and right half of screen
+    // Strategy 1: find buttons in header area (top 80px) and right side
     const topRightBtns = allBtns.filter(b => {
       const r = b.getBoundingClientRect();
-      return r.top < 60 && r.top >= 0 && r.left > vpW * 0.5 && r.width > 0 && r.height > 0;
+      return r.top < 80 && r.top >= 0 && r.left > vpW * 0.4 && r.width > 0 && r.height > 0;
     });
 
-    if (topRightBtns.length === 0) return false;
+    if (topRightBtns.length > 0) {
+      topRightBtns.sort((a, b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left);
+      const anchor = topRightBtns[0];
+      if (anchor?.parentElement) {
+        anchor.parentElement.insertBefore(btn, anchor);
+        return true;
+      }
+    }
 
-    // Sort by left position (rightmost first)
-    topRightBtns.sort((a, b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left);
+    // Strategy 2: find header/nav containers and append to the last flex/grid child area
+    const headerEls = document.querySelectorAll('header, nav, [role="banner"], [data-testid="header"]');
+    for (const hdr of headerEls) {
+      const r = hdr.getBoundingClientRect();
+      if (r.top < 80 && r.height > 0 && r.height < 100) {
+        // Find the rightmost container inside
+        const containers = hdr.querySelectorAll('div, span');
+        const rightmost = Array.from(containers)
+          .filter(c => {
+            const cr = c.getBoundingClientRect();
+            return cr.left > vpW * 0.6 && cr.width > 0 && cr.height > 0;
+          })
+          .sort((a, b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left);
+        if (rightmost[0]) {
+          rightmost[0].appendChild(btn);
+          return true;
+        }
+      }
+    }
 
-    // The ghost button is the rightmost one
-    const ghostBtn = topRightBtns[0];
-    if (!ghostBtn?.parentElement) return false;
-
-    // Insert our button just before the ghost button
-    ghostBtn.parentElement.insertBefore(btn, ghostBtn);
-    return true;
+    return false;
   }
 
   // Try immediately
@@ -626,7 +645,9 @@ function injectBtn() {
   const delays = [300, 600, 1000, 1500, 2000, 3000, 4000, 5000];
   let i = 0;
   function retry() {
-    if (document.getElementById("ar-btn")) return; // already injected
+    const ex = document.getElementById("ar-btn");
+    if (ex && ex.isConnected) return; // already injected and in DOM
+    if (ex && !ex.isConnected) ex.remove();
     if (tryInsert()) {
       safeGet("resumeState", d => { if (d?.resumeState?.active) updateBtn(d.resumeState); });
       return;
@@ -709,10 +730,10 @@ function openPanel() {
         <div>
           <label class="ar-lbl">Resets in (min)</label>
           <input id="ar-mins" class="ar-inp" type="number"
-            value="${resetInfo?.mins || 180}" min="1" max="600"/>
+            value="${resetInfo?.mins ?? 0}" min="0" max="600"/>
           ${resetInfo
-            ? `<div class="ar-auto">✓ Auto-detected: ${resetInfo.display}</div>`
-            : `<div class="ar-hint">Check the bar above ↑</div>`}
+            ? `<div class="ar-auto">✓ Auto-detected: ${resetInfo.display} (${resetInfo.source})</div>`
+            : `<div class="ar-auto" style="color:#4ade80;">✓ No active limit — Session: ${getUsageInfo().session?.pct ?? '?'}%</div>`}
         </div>
         <div>
           <label class="ar-lbl">Check every (s)</label>
@@ -1128,8 +1149,12 @@ const mutObs = new MutationObserver(() => {
     if (!shouldShowBtn()) {
       document.getElementById("ar-btn")?.remove();
       closePanel();
-    } else if (!document.getElementById("ar-btn")) {
-      injectBtn();
+    } else {
+      const ex = document.getElementById("ar-btn");
+      if (!ex || !ex.isConnected) {
+        if (ex) ex.remove();
+        injectBtn();
+      }
     }
   }, 1500);
 
