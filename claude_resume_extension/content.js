@@ -59,6 +59,32 @@ try {
       sendResponse(ri || { mins: null });
       return;
     }
+    if (msg.type === "GET_USAGE_INFO") {
+      sendResponse(getUsageInfo());
+      return;
+    }
+    if (msg.type === "TOGGLE_PANEL") {
+      togglePanel();
+      return;
+    }
+    if (msg.type === "TOGGLE_AUTORESUME") {
+      // If active, stop. Otherwise open panel for user to start.
+      safeGet("resumeState", d => {
+        if (d?.resumeState?.active) {
+          safeSend({ type: "STOP_RESUME" }, () => showToast("⏹ AutoResume stopped"));
+        } else {
+          if (!panelOpen) openPanel();
+          showToast("Open panel — configure and click Start");
+        }
+      });
+      return;
+    }
+    if (msg.type === "PLAY_NOTIFICATION_SOUND") {
+      safeGet("soundEnabled", d => {
+        if (d?.soundEnabled !== false) playNotificationChime();
+      });
+      return;
+    }
   });
 } catch {}
 
@@ -232,6 +258,226 @@ function getResetInfo() {
     return null;
   } catch {}
   return null;
+}
+
+// ── Prompt Templates ──────────────────────────────────────────────────
+const BUILTIN_TEMPLATES = [
+  { name: "Continue", prompt: "Continue from where we left off. Next step:" },
+  { name: "Continue coding", prompt: "Continue coding from where we left off. Pick up the next task and implement it." },
+  { name: "Summarize", prompt: "Summarize our progress so far and outline the remaining tasks." },
+  { name: "Debug", prompt: "Debug the last error we encountered. Analyze the issue and provide a fix." },
+];
+
+function getTemplates(cb) {
+  safeGet("customTemplates", d => {
+    const custom = d?.customTemplates || [];
+    cb([...BUILTIN_TEMPLATES, ...custom]);
+  });
+}
+
+function saveCustomTemplate(name, prompt) {
+  safeGet("customTemplates", d => {
+    const arr = d?.customTemplates || [];
+    arr.push({ name, prompt, custom: true });
+    if (arr.length > 10) arr.shift();
+    safeSet({ customTemplates: arr });
+  });
+}
+
+function removeCustomTemplate(idx) {
+  safeGet("customTemplates", d => {
+    const arr = d?.customTemplates || [];
+    arr.splice(idx, 1);
+    safeSet({ customTemplates: arr });
+  });
+}
+
+// ── Notification Sound ────────────────────────────────────────────────
+function playNotificationChime() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const notes = [523.25, 659.25, 783.99]; // C5, E5, G5 chord arpeggio
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + i * 0.12);
+      gain.gain.setValueAtTime(0.15, ctx.currentTime + i * 0.12);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.12 + 0.5);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + i * 0.12);
+      osc.stop(ctx.currentTime + i * 0.12 + 0.5);
+    });
+    setTimeout(() => ctx.close(), 2000);
+  } catch {}
+}
+
+// ── Conversation Stats ────────────────────────────────────────────────
+let convStatsVisible = false;
+let convStatsInterval = null;
+
+function countConversationStats() {
+  try {
+    const userMsgs = document.querySelectorAll('[data-testid*="user-message"], .font-user-message, [data-is-streaming="false"]');
+    const allMsgBlocks = document.querySelectorAll('[data-testid*="message"], .font-claude-message, .font-user-message');
+    let totalText = "";
+    allMsgBlocks.forEach(el => { totalText += (el.innerText || "") + " "; });
+    const userCount = Math.max(
+      userMsgs.length,
+      document.querySelectorAll('[class*="user"]').length > 0
+        ? document.querySelectorAll('div[data-testid]').length / 2
+        : 0
+    );
+    // Fallback: count by alternating message containers
+    const msgContainers = document.querySelectorAll('div.group\\/conversation-turn');
+    const actualCount = msgContainers.length || Math.ceil(userCount);
+
+    const tokens = estimateTokens(totalText);
+    return { messages: actualCount, tokens, textLength: totalText.length };
+  } catch {
+    return { messages: 0, tokens: 0, textLength: 0 };
+  }
+}
+
+function showConvStats() {
+  if (document.getElementById("ar-conv-stats")) return;
+  convStatsVisible = true;
+  safeSet({ convStatsVisible: true });
+
+  function render() {
+    const stats = countConversationStats();
+    let el = document.getElementById("ar-conv-stats");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "ar-conv-stats";
+      document.body.appendChild(el);
+    }
+    el.innerHTML = `
+      <span class="ar-cs-item"><span class="ar-cs-icon">💬</span><span class="ar-cs-val">${stats.messages}</span> msgs</span>
+      <span class="ar-cs-item"><span class="ar-cs-icon">🔤</span><span class="ar-cs-val">~${stats.tokens > 1000 ? (stats.tokens / 1000).toFixed(1) + "k" : stats.tokens}</span> tokens</span>
+      <button class="ar-cs-close" id="ar-cs-close">✕</button>
+    `;
+    el.querySelector("#ar-cs-close").onclick = hideConvStats;
+  }
+
+  render();
+  convStatsInterval = setInterval(render, 5000);
+}
+
+function hideConvStats() {
+  convStatsVisible = false;
+  safeSet({ convStatsVisible: false });
+  document.getElementById("ar-conv-stats")?.remove();
+  if (convStatsInterval) { clearInterval(convStatsInterval); convStatsInterval = null; }
+}
+
+// ── Usage History & Sparkline ─────────────────────────────────────────
+function recordUsageSnapshot() {
+  const usage = getUsageInfo();
+  if (!usage.session && !usage.weekly) return;
+  safeGet("usageHistory", d => {
+    const history = d?.usageHistory || [];
+    history.push({
+      t: Date.now(),
+      s: usage.session?.pct ?? null,
+      w: usage.weekly?.pct ?? null,
+    });
+    if (history.length > 50) history.splice(0, history.length - 50);
+    safeSet({ usageHistory: history });
+  });
+}
+
+function renderSparkline(containerId) {
+  safeGet("usageHistory", d => {
+    const el = document.getElementById(containerId);
+    if (!el) return;
+    const history = d?.usageHistory || [];
+    if (history.length < 2) {
+      el.innerHTML = `<div class="ar-sparkline-title">Usage Trend</div>
+        <div style="font-size:10px;color:#3e3e50;text-align:center;padding:8px 0;">Not enough data yet</div>`;
+      return;
+    }
+
+    const pts = history.map(h => h.s ?? 0);
+    const max = Math.max(...pts, 100);
+    const w = 300, h = 36;
+    const step = w / (pts.length - 1);
+
+    const pathD = pts.map((v, i) => {
+      const x = i * step;
+      const y = h - (v / max) * h;
+      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(" ");
+
+    const areaD = pathD + ` L${w},${h} L0,${h} Z`;
+
+    el.innerHTML = `
+      <div class="ar-sparkline-title">Session Usage Trend</div>
+      <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="ar-sg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#7c3aed" stop-opacity="0.3"/>
+            <stop offset="100%" stop-color="#7c3aed" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <path d="${areaD}" fill="url(#ar-sg)" />
+        <path d="${pathD}" fill="none" stroke="#a78bfa" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="${(pts.length - 1) * step}" cy="${h - (pts[pts.length - 1] / max) * h}" r="2.5" fill="#a78bfa"/>
+      </svg>
+    `;
+  });
+}
+
+// ── Export/Import Settings ─────────────────────────────────────────────
+function exportSettings() {
+  safeGet(["savedSettings", "customTemplates", "usageHistory"], d => {
+    const data = {
+      version: "1.0.0",
+      exportedAt: new Date().toISOString(),
+      savedSettings: d.savedSettings || {},
+      customTemplates: d.customTemplates || [],
+      usageHistory: d.usageHistory || [],
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `autoresume-settings-${Date.now()}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    showToast("✓ Settings exported");
+  });
+}
+
+function importSettings() {
+  const input = document.createElement("input");
+  input.type = "file"; input.accept = ".json";
+  input.onchange = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (data.savedSettings) safeSet({ savedSettings: data.savedSettings });
+        if (data.customTemplates) safeSet({ customTemplates: data.customTemplates });
+        if (data.usageHistory) safeSet({ usageHistory: data.usageHistory });
+        showToast("✓ Settings imported — reopen panel");
+        closePanel();
+      } catch { showToast("⚠ Invalid settings file"); }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+}
+
+// ── Auto-Save Draft ───────────────────────────────────────────────────
+let draftSaveTimeout = null;
+function autoSaveDraft(prompt, url) {
+  clearTimeout(draftSaveTimeout);
+  draftSaveTimeout = setTimeout(() => {
+    safeSet({ savedSettings: { prompt, chatUrl: url || "", resetMinutes: 0, checkInterval: 60 } });
+  }, 1200);
 }
 
 // ── Send prompt ───────────────────────────────────────────────────────
@@ -558,6 +804,102 @@ function injectStyles() {
       border-color: rgba(124, 58, 237, 0.25);
       background: rgba(124, 58, 237, 0.08);
     }
+
+    /* Prompt Templates */
+    .ar-templates {
+      display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px;
+    }
+    .ar-tpl-chip {
+      padding: 4px 10px; border-radius: 100px; border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03); color: #8b8ba0; font-size: 10px;
+      cursor: pointer; transition: all 0.15s; font-family: inherit; white-space: nowrap;
+    }
+    .ar-tpl-chip:hover {
+      background: rgba(124,58,237,0.12); border-color: rgba(124,58,237,0.3); color: #a78bfa;
+    }
+    .ar-tpl-chip.custom { border-style: dashed; }
+    .ar-tpl-save {
+      padding: 4px 8px; border-radius: 100px; border: 1px dashed rgba(74,222,128,0.25);
+      background: transparent; color: #4ade80; font-size: 10px;
+      cursor: pointer; transition: all 0.15s; font-family: inherit;
+    }
+    .ar-tpl-save:hover { background: rgba(74,222,128,0.08); }
+
+    /* Settings Row (sound toggle, shortcuts) */
+    .ar-settings-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 0;
+    }
+    .ar-settings-label {
+      font-size: 11px; color: #6a6a7e; display: flex; align-items: center; gap: 6px;
+    }
+    .ar-toggle {
+      position: relative; width: 32px; height: 18px; appearance: none;
+      background: #2a2a3e; border-radius: 9px; cursor: pointer;
+      transition: background 0.2s; border: none; outline: none;
+    }
+    .ar-toggle:checked { background: #7c3aed; }
+    .ar-toggle::after {
+      content: ''; position: absolute; top: 2px; left: 2px;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #fff; transition: transform 0.2s;
+    }
+    .ar-toggle:checked::after { transform: translateX(14px); }
+
+    /* Export/Import */
+    .ar-export-row {
+      display: flex; gap: 6px; margin-top: 4px;
+    }
+    .ar-btn-sm {
+      flex: 1; padding: 6px 8px; border-radius: 7px;
+      border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.03);
+      color: #8b8ba0; font-size: 10px; font-weight: 500; cursor: pointer;
+      font-family: inherit; transition: all 0.15s; text-align: center;
+    }
+    .ar-btn-sm:hover { background: rgba(255,255,255,0.06); color: #d4d4e0; }
+
+    /* Sparkline */
+    .ar-sparkline-wrap {
+      padding: 8px 11px; border-radius: 10px;
+      background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05);
+    }
+    .ar-sparkline-title {
+      font-size: 10px; color: #4a4a5e; text-transform: uppercase;
+      letter-spacing: 0.5px; font-weight: 600; margin-bottom: 6px;
+    }
+    .ar-sparkline svg { width: 100%; height: 40px; }
+
+    /* Conversation Stats Overlay */
+    #ar-conv-stats {
+      position: fixed; bottom: 60px; right: 16px; z-index: 2147483640;
+      background: rgba(16,16,20,0.92); border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 10px; padding: 8px 12px;
+      font-family: -apple-system,'Segoe UI',sans-serif;
+      font-size: 11px; color: #9b9ba8;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+      display: flex; gap: 12px; align-items: center;
+      transition: all 0.25s ease; cursor: default;
+      opacity: 0.7;
+    }
+    #ar-conv-stats:hover { opacity: 1; border-color: rgba(124,58,237,0.25); }
+    .ar-cs-item { display: flex; align-items: center; gap: 4px; }
+    .ar-cs-icon { font-size: 10px; opacity: 0.6; }
+    .ar-cs-val { color: #d4d4e0; font-weight: 500; font-family: monospace; font-size: 11px; }
+    .ar-cs-close {
+      width: 16px; height: 16px; border-radius: 4px; border: none;
+      background: rgba(255,255,255,0.06); color: #5a5a6e; font-size: 9px;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      transition: all 0.15s; margin-left: 2px;
+    }
+    .ar-cs-close:hover { background: rgba(255,255,255,0.12); color: #f0f0f4; }
+
+    /* Keyboard shortcut hint */
+    .ar-shortcut {
+      font-size: 9px; color: #3a3a4e; font-family: monospace;
+      padding: 1px 4px; border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 3px; background: rgba(255,255,255,0.02);
+    }
   `;
   document.head.appendChild(el);
 }
@@ -719,11 +1061,16 @@ function openPanel() {
         </div>
       </div>
       <div>
+        <label class="ar-lbl">Prompt Templates</label>
+        <div class="ar-templates" id="ar-templates"></div>
+      </div>
+      <div>
         <label class="ar-lbl">Resume Prompt</label>
         <textarea id="ar-prompt" class="ar-txa"
           placeholder="Continue from where we left off. Next step: ..."></textarea>
         <div class="ar-prompt-stats">
           <span id="ar-prompt-char-count">0 chars</span> | <span id="ar-prompt-token-count" class="stat-highlight">0 tokens</span>
+          &nbsp;·&nbsp;<button class="ar-tpl-save" id="ar-save-tpl">+ Save as template</button>
         </div>
       </div>
       <div class="ar-row2">
@@ -742,8 +1089,25 @@ function openPanel() {
         </div>
       </div>
       <div class="ar-div"></div>
+      <div class="ar-settings-row">
+        <span class="ar-settings-label">🔔 Sound notification</span>
+        <input type="checkbox" class="ar-toggle" id="ar-sound-toggle" checked />
+      </div>
+      <div class="ar-settings-row">
+        <span class="ar-settings-label">📊 Conversation stats</span>
+        <input type="checkbox" class="ar-toggle" id="ar-stats-toggle" />
+      </div>
+      <div class="ar-settings-row">
+        <span class="ar-settings-label">⌨ Shortcuts</span>
+        <span><span class="ar-shortcut">Alt+Shift+R</span> panel · <span class="ar-shortcut">Alt+Shift+S</span> start/stop</span>
+      </div>
+      <div class="ar-div"></div>
       <button class="ar-btn-primary" id="ar-start">▶&nbsp; Start AutoResume</button>
       <button class="ar-btn-danger"  id="ar-stop" style="display:none">■&nbsp; Stop</button>
+      <div class="ar-export-row">
+        <button class="ar-btn-sm" id="ar-export">📤 Export Settings</button>
+        <button class="ar-btn-sm" id="ar-import">📥 Import Settings</button>
+      </div>
     </div>
 
     <!-- STATUS TAB -->
@@ -789,6 +1153,7 @@ function openPanel() {
           <span class="ar-task-val muted" id="tk-attempts">0</span>
         </div>
       </div>
+      <div class="ar-sparkline-wrap" id="ar-sparkline"></div>
       <button class="ar-btn-danger" id="ar-stop2" style="display:none">■&nbsp; Stop AutoResume</button>
     </div>
 
@@ -808,7 +1173,7 @@ function openPanel() {
       tab.classList.add("active");
       p.querySelector(`#ar-t-${tab.dataset.tab}`).classList.add("active");
       if (tab.dataset.tab === "log") refreshLog();
-      if (tab.dataset.tab === "status") refreshStatus();
+      if (tab.dataset.tab === "status") { refreshStatus(); renderSparkline("ar-sparkline"); }
     };
   });
 
@@ -826,8 +1191,79 @@ function openPanel() {
   }
 
   if (promptTa) {
-    promptTa.addEventListener("input", updatePromptStats);
+    promptTa.addEventListener("input", () => {
+      updatePromptStats();
+      // Auto-save draft
+      const url = p.querySelector("#ar-url")?.value || "";
+      autoSaveDraft(promptTa.value, url);
+    });
   }
+
+  // ── Prompt Templates
+  function renderTemplates() {
+    const container = p.querySelector("#ar-templates");
+    if (!container) return;
+    getTemplates(templates => {
+      container.innerHTML = templates.map((t, i) =>
+        `<button class="ar-tpl-chip ${t.custom ? 'custom' : ''}" data-idx="${i}" title="${escH(t.prompt)}">${escH(t.name)}</button>`
+      ).join("");
+      container.querySelectorAll(".ar-tpl-chip").forEach(chip => {
+        chip.onclick = () => {
+          const idx = parseInt(chip.dataset.idx);
+          const tpl = templates[idx];
+          if (tpl && promptTa) {
+            promptTa.value = tpl.prompt;
+            updatePromptStats();
+            showToast(`✓ Template: ${tpl.name}`);
+          }
+        };
+      });
+    });
+  }
+  renderTemplates();
+
+  // ── Save as template
+  const saveTplBtn = p.querySelector("#ar-save-tpl");
+  if (saveTplBtn) {
+    saveTplBtn.onclick = () => {
+      const text = promptTa?.value?.trim();
+      if (!text) { showToast("⚠ Enter a prompt first"); return; }
+      const name = text.slice(0, 20).replace(/[^a-zA-Z0-9 ]/g, "") + (text.length > 20 ? "…" : "");
+      saveCustomTemplate(name, text);
+      showToast("✓ Saved as template");
+      setTimeout(renderTemplates, 300);
+    };
+  }
+
+  // ── Sound toggle
+  const soundToggle = p.querySelector("#ar-sound-toggle");
+  if (soundToggle) {
+    safeGet("soundEnabled", d => { soundToggle.checked = d?.soundEnabled !== false; });
+    soundToggle.onchange = () => {
+      safeSet({ soundEnabled: soundToggle.checked });
+      safeSend({ type: "SET_SOUND_PREF", data: { enabled: soundToggle.checked } });
+      if (soundToggle.checked) playNotificationChime();
+    };
+  }
+
+  // ── Conversation stats toggle
+  const statsToggle = p.querySelector("#ar-stats-toggle");
+  if (statsToggle) {
+    safeGet("convStatsVisible", d => {
+      statsToggle.checked = !!d?.convStatsVisible;
+      if (d?.convStatsVisible && location.href.includes("/chat/")) showConvStats();
+    });
+    statsToggle.onchange = () => {
+      if (statsToggle.checked) showConvStats();
+      else hideConvStats();
+    };
+  }
+
+  // ── Export/Import
+  const exportBtn = p.querySelector("#ar-export");
+  const importBtn = p.querySelector("#ar-import");
+  if (exportBtn) exportBtn.onclick = exportSettings;
+  if (importBtn) importBtn.onclick = importSettings;
 
   // ── Close
   p.querySelector("#ar-close").onclick = closePanel;
@@ -843,7 +1279,7 @@ function openPanel() {
   p.querySelector("#ar-start").onclick = () => {
     const url      = p.querySelector("#ar-url").value.trim();
     const prompt   = p.querySelector("#ar-prompt").value.trim();
-    const mins     = parseInt(p.querySelector("#ar-mins").value) || 180;
+    const mins     = parseInt(p.querySelector("#ar-mins").value) || 0;
     const interval = parseInt(p.querySelector("#ar-interval").value) || 60;
 
     if (!url.startsWith("https://claude.ai/chat/")) {
@@ -887,18 +1323,22 @@ function openPanel() {
 
   // ── Poll every 4s to refresh status + log
   if (pollInterval) clearInterval(pollInterval);
+  let pollCount = 0;
   pollInterval = setInterval(() => {
     if (!isCtxValid() || !document.getElementById("ar-panel")) {
       clearInterval(pollInterval); pollInterval = null; return;
     }
     const activeTab = p.querySelector(".ar-tab.active")?.dataset?.tab;
-    if (activeTab === "status") refreshStatus();
+    if (activeTab === "status") { refreshStatus(); renderSparkline("ar-sparkline"); }
     if (activeTab === "log")    refreshLog();
     // Refresh auto-detect
     const ri = getResetInfo();
     if (ri && p.querySelector("#ar-start").style.display !== "none") {
       p.querySelector("#ar-mins").value = ri.mins;
     }
+    // Record usage snapshot every ~30s (every 7-8 polls)
+    pollCount++;
+    if (pollCount % 8 === 0) recordUsageSnapshot();
   }, 4000);
 }
 
@@ -1050,7 +1490,7 @@ function updateStatusTab(state) {
       const pct = usage.session.pct;
       const resetTxt = usage.session.reset ? ` · resets ${usage.session.reset.display}` : "";
       tk.session.textContent = `${pct}%${resetTxt}`;
-      tk.session.className = pct >= 80 ? "ar-task-val yellow" : pct >= 100 ? "ar-task-val err" : "ar-task-val green";
+      tk.session.className = pct >= 100 ? "ar-task-val err" : pct >= 80 ? "ar-task-val yellow" : "ar-task-val green";
     } else {
       tk.session.textContent = "—";
       tk.session.className = "ar-task-val muted";

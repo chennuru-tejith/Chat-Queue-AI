@@ -30,7 +30,7 @@ $("btnCurrentTab").addEventListener("click", () => {
 $("btnStart").addEventListener("click", () => {
   const chatUrl      = $("chatUrl").value.trim();
   const prompt       = $("prompt").value.trim();
-  const resetMinutes = parseInt($("resetMinutes").value) || 180;
+  const resetMinutes = parseInt($("resetMinutes").value) || 0;
   const checkInterval = parseInt($("checkInterval").value) || 60;
 
   if (!chatUrl.startsWith("https://claude.ai/chat/")) {
@@ -144,6 +144,17 @@ function renderStatus() {
       </div>
 
       <div class="status-card">
+        <div class="status-row">
+          <span class="status-label">Session</span>
+          <span class="status-value" id="statusSession">—</span>
+        </div>
+        <div class="status-row" style="margin-bottom:0">
+          <span class="status-label">Weekly</span>
+          <span class="status-value" id="statusWeekly">—</span>
+        </div>
+      </div>
+
+      <div class="status-card">
         <div class="status-label" style="margin-bottom:8px">Resume Prompt</div>
         <div style="font-size:12px;color:var(--text);line-height:1.6;word-break:break-word;">
           ${escHtml(state.prompt || "—")}
@@ -158,6 +169,35 @@ function renderStatus() {
     if (stop2) stop2.addEventListener("click", () => {
       chrome.runtime.sendMessage({ type: "STOP_RESUME" }, () => {
         toast("Stopped"); updateUI(); renderStatus();
+      });
+    });
+
+    // Fetch live usage from the active Claude tab
+    chrome.tabs.query({ url: "*://claude.ai/*" }, tabs => {
+      const tab = tabs && tabs[0];
+      if (!tab) return;
+      chrome.tabs.sendMessage(tab.id, { type: "GET_USAGE_INFO" }, usage => {
+        if (chrome.runtime.lastError || !usage) return;
+
+        const sessionEl = $("statusSession");
+        const weeklyEl  = $("statusWeekly");
+
+        if (sessionEl && usage.session) {
+          const pct = usage.session.pct;
+          let color = "var(--green)";
+          if (pct >= 100) color = "var(--red)";
+          else if (pct >= 80) color = "var(--yellow)";
+          const resetTxt = usage.session.reset ? ` · resets in ${usage.session.reset.display}` : "";
+          sessionEl.innerHTML = `<span style="color:${color};font-weight:500">${pct}%</span>${resetTxt}`;
+        }
+
+        if (weeklyEl && usage.weekly) {
+          const pct = usage.weekly.pct;
+          let color = "var(--muted)";
+          if (pct >= 80) color = "var(--yellow)";
+          const resetTxt = usage.weekly.reset ? ` · resets in ${usage.weekly.reset.display}` : "";
+          weeklyEl.innerHTML = `<span style="color:${color};font-weight:500">${pct}%</span>${resetTxt}`;
+        }
       });
     });
   });
@@ -237,6 +277,24 @@ function escHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
+// ── Token estimation ──────────────────────────────────────────────────
+function estimateTokens(text) {
+  if (!text) return 0;
+  const charCount = text.length;
+  const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
+  if (charCount === 0) return 0;
+  const tokens = Math.ceil((charCount / 4 + wordCount / 0.75) / 2);
+  return Math.max(1, tokens);
+}
+
+function updatePromptStats() {
+  const text = $("prompt").value;
+  const chars = text.length;
+  const tokens = estimateTokens(text);
+  $("promptCharCount").textContent = chars + " chars";
+  $("promptTokenCount").textContent = tokens + " tokens";
+}
+
 // ── Load saved settings on open ───────────────────────────────────────
 chrome.storage.local.get("savedSettings", ({ savedSettings }) => {
   if (savedSettings) {
@@ -244,6 +302,7 @@ chrome.storage.local.get("savedSettings", ({ savedSettings }) => {
     if (savedSettings.prompt)       $("prompt").value       = savedSettings.prompt;
     if (savedSettings.resetMinutes) $("resetMinutes").value = savedSettings.resetMinutes;
     if (savedSettings.checkInterval) $("checkInterval").value = savedSettings.checkInterval;
+    updatePromptStats();
   }
 });
 
@@ -267,6 +326,18 @@ function autoDetectTimer() {
 // ── Init ──────────────────────────────────────────────────────────────
 updateUI();
 autoDetectTimer();
+
+// ── Prompt textarea live token counter ────────────────────────────────
+$("prompt").addEventListener("input", updatePromptStats);
+
+// ── Template chip click handlers ──────────────────────────────────────
+document.querySelectorAll(".template-chip").forEach(chip => {
+  chip.addEventListener("click", () => {
+    $("prompt").value = chip.dataset.tpl;
+    updatePromptStats();
+    $("prompt").focus();
+  });
+});
 
 // Auto-refresh status every 5 seconds when popup is open
 setInterval(() => {

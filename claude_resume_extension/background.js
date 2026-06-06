@@ -1,4 +1,4 @@
-// Claude AutoResume — Background Service Worker v4
+// Claude AutoResume — Background Service Worker v5
 
 const ALARM = "ar-monitor";
 const MAX_ATTEMPTS = 120;
@@ -12,6 +12,35 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     chrome.storage.local.get("resumeState", d => sendResponse({ state: d.resumeState || null }));
     return true;
   }
+
+  // ── Usage history ────────────────────────────────────────────────
+  if (msg.type === "RECORD_USAGE") {
+    const point = { t: Date.now(), s: msg.data.session, w: msg.data.weekly };
+    chrome.storage.local.get("usageHistory", d => {
+      const history = d.usageHistory || [];
+      history.push(point);
+      if (history.length > 50) history.splice(0, history.length - 50);
+      chrome.storage.local.set({ usageHistory: history }, () => sendResponse({ ok: true }));
+    });
+    return true;
+  }
+  if (msg.type === "GET_USAGE_HISTORY") {
+    chrome.storage.local.get("usageHistory", d => sendResponse({ history: d.usageHistory || [] }));
+    return true;
+  }
+
+  // ── Sound preference ─────────────────────────────────────────────
+  if (msg.type === "SET_SOUND_PREF") {
+    chrome.storage.local.set({ soundEnabled: msg.data.enabled }, () => sendResponse({ ok: true }));
+    return true;
+  }
+  if (msg.type === "GET_SOUND_PREF") {
+    chrome.storage.local.get("soundEnabled", d => {
+      sendResponse({ enabled: d.soundEnabled !== undefined ? d.soundEnabled : true });
+    });
+    return true;
+  }
+
   return true;
 });
 
@@ -199,6 +228,14 @@ function attemptSend(state) {
                   message: "Your prompt was sent! Claude is responding."
                 });
 
+                // Sound notification
+                chrome.storage.local.get("soundEnabled", d => {
+                  if (d.soundEnabled !== false) {
+                    chrome.tabs.sendMessage(tabId, { type: "PLAY_NOTIFICATION_SOUND" },
+                      () => chrome.runtime.lastError);
+                  }
+                });
+
                 // Focus tab
                 chrome.tabs.update(tabId, { active: true });
 
@@ -284,4 +321,21 @@ function ts() {
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.set({ resumeState: null });
+});
+
+// ── Keyboard shortcuts ─────────────────────────────────────────────────
+chrome.commands.onCommand.addListener(command => {
+  chrome.tabs.query({ url: "https://claude.ai/*", active: true, currentWindow: true }, tabs => {
+    const tab = tabs[0];
+    if (!tab) return;
+
+    if (command === "toggle-panel") {
+      chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_PANEL" },
+        () => chrome.runtime.lastError);
+    }
+    if (command === "toggle-autoresume") {
+      chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_AUTORESUME" },
+        () => chrome.runtime.lastError);
+    }
+  });
 });

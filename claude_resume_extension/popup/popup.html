@@ -387,6 +387,55 @@
   .chip.purple { background: rgba(167,139,250,0.1); color: var(--accent); border: 1px solid rgba(167,139,250,0.2); }
   .chip.gray { background: rgba(107,114,128,0.1); color: var(--muted); border: 1px solid rgba(107,114,128,0.2); }
   .chip.red { background: rgba(248,113,113,0.1); color: var(--red); border: 1px solid rgba(248,113,113,0.2); }
+
+  /* ── Prompt template chips ──────────────────── */
+  .template-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-bottom: 8px;
+  }
+
+  .template-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 100px;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--muted);
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+    letter-spacing: 0.1px;
+    white-space: nowrap;
+  }
+
+  .template-chip:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: rgba(167,139,250,0.06);
+  }
+
+  .template-chip:active {
+    transform: scale(0.97);
+  }
+
+  /* ── Prompt stats (token counter) ──────────── */
+  .prompt-stats {
+    font-size: 10px;
+    color: var(--muted);
+    text-align: right;
+    margin-top: 4px;
+    font-family: monospace;
+  }
+
+  .prompt-stats .stat-highlight {
+    color: var(--accent);
+    font-weight: 600;
+  }
 </style>
 </head>
 <body>
@@ -427,15 +476,22 @@
 
   <div class="field">
     <label>Resume Prompt</label>
+    <div class="template-chips" id="templateChips">
+      <span class="template-chip" data-tpl="Continue coding from where you left off.">Continue coding</span>
+      <span class="template-chip" data-tpl="Summarize the progress so far and outline next steps.">Summarize progress</span>
+      <span class="template-chip" data-tpl="Debug the error and fix the issue.">Debug the error</span>
+      <span class="template-chip" data-tpl="Continue from where we left off.">Continue from where we left off</span>
+    </div>
     <textarea id="prompt" placeholder="Continue from where we left off. Next step: ..."></textarea>
+    <div class="prompt-stats" id="promptStats"><span id="promptCharCount">0 chars</span> · <span id="promptTokenCount" class="stat-highlight">0 tokens</span></div>
     <div class="helper">What should Claude do when the limit resets?</div>
   </div>
 
   <div class="time-row">
     <div class="field">
       <label>Limit resets in (min)</label>
-      <input type="number" id="resetMinutes" value="180" min="1" max="600" />
-      <div class="time-hint">Usually 180 min</div>
+      <input type="number" id="resetMinutes" value="0" min="0" max="600" />
+      <div class="time-hint">Auto-detected from page</div>
     </div>
     <div class="field">
       <label>Check every (sec)</label>
