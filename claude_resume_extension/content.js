@@ -5,6 +5,15 @@
 function isCtxValid() {
   try { return !!(chrome?.runtime?.id); } catch { return false; }
 }
+
+function estimateTokens(text) {
+  if (!text) return 0;
+  const charCount = text.length;
+  const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
+  if (charCount === 0) return 0;
+  const tokens = Math.ceil((charCount / 4 + wordCount / 0.75) / 2);
+  return Math.max(1, tokens);
+}
 function safeSend(msg, cb) {
   if (!isCtxValid()) return;
   try { chrome.runtime.sendMessage(msg, cb || (() => chrome.runtime.lastError)); }
@@ -24,6 +33,7 @@ function selfDestruct() {
   try { document.getElementById("ar-btn")?.remove(); } catch {}
   try { document.getElementById("ar-panel")?.remove(); } catch {}
   try { document.getElementById("ar-styles")?.remove(); } catch {}
+  try { document.getElementById("ar-input-counter")?.remove(); } catch {}
 }
 
 // ── Message handler ───────────────────────────────────────────────────
@@ -218,14 +228,52 @@ function injectStyles() {
   el.textContent = `
     /* Header button */
     #ar-btn {
-      width:32px; height:32px; border-radius:8px; border:none;
-      background:transparent; cursor:pointer; color:#9b9ba8;
-      display:inline-flex; align-items:center; justify-content:center;
-      position:relative; flex-shrink:0; transition:background 0.15s,color 0.15s;
-      vertical-align:middle;
+      width: 32px;
+      height: 32px;
+      border-radius: 9px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      background: rgba(255, 255, 255, 0.02);
+      cursor: pointer;
+      color: #9b9ba8;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      flex-shrink: 0;
+      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      vertical-align: middle;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
     }
-    #ar-btn:hover { background:rgba(255,255,255,0.08); color:#e8e8f0; }
-    #ar-btn svg { width:17px; height:17px; pointer-events:none; }
+    #ar-btn:hover {
+      background: rgba(255, 255, 255, 0.06);
+      border-color: rgba(167, 139, 250, 0.35);
+      color: #f3f4f6;
+      box-shadow: 0 0 10px rgba(167, 139, 250, 0.15);
+      transform: translateY(-1px);
+    }
+    #ar-btn:active {
+      transform: translateY(0);
+    }
+    #ar-btn svg {
+      width: 18px;
+      height: 18px;
+      pointer-events: none;
+      transition: color 0.25s;
+    }
+    #ar-btn:hover svg {
+      color: #a78bfa;
+    }
+    #ar-btn:hover svg .ar-outer-ring {
+      animation: ar-spin-ring 12s linear infinite;
+    }
+    #ar-btn:hover svg .ar-tick-hand {
+      transform-origin: 12px 12px;
+      transform: rotate(20deg);
+    }
+    @keyframes ar-spin-ring {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
     #ar-badge {
       position:absolute; top:5px; right:5px; width:7px; height:7px;
       border-radius:50%; border:1.5px solid #1a1a1e; display:none;
@@ -412,12 +460,57 @@ function injectStyles() {
       box-shadow:0 4px 24px rgba(0,0,0,0.6);
     }
     #ar-toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+
+    /* Token counters */
+    .ar-prompt-stats {
+      font-size: 10px;
+      color: #5a5a6e;
+      text-align: right;
+      margin-top: 4.5px;
+      font-family: monospace;
+      letter-spacing: 0.2px;
+    }
+    .ar-prompt-stats .stat-highlight {
+      color: #a78bfa;
+      font-weight: 600;
+    }
+    .ar-input-counter {
+      position: absolute;
+      bottom: 12px;
+      left: 16px;
+      font-size: 10px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.45);
+      background: rgba(16, 16, 20, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      padding: 3px 8px;
+      border-radius: 6px;
+      pointer-events: none;
+      z-index: 9;
+      font-family: monospace;
+      backdrop-filter: blur(4px);
+      transition: all 0.2s ease;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    }
+    .ar-input-counter.active {
+      color: #a78bfa;
+      border-color: rgba(124, 58, 237, 0.25);
+      background: rgba(124, 58, 237, 0.08);
+    }
   `;
   document.head.appendChild(el);
 }
 
 // ── Inject button into Claude header ─────────────────────────────────
+function shouldShowBtn() {
+  return window.location.href.includes("/chat/");
+}
+
 function injectBtn() {
+  if (!shouldShowBtn()) {
+    document.getElementById("ar-btn")?.remove();
+    return;
+  }
   if (document.getElementById("ar-btn")) return;
 
   const btn = document.createElement("button");
@@ -425,9 +518,10 @@ function injectBtn() {
   btn.title = "AutoResume";
   btn.innerHTML = `
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="12" cy="12" r="9"/>
-      <polyline points="12 7 12 12 15.5 14"/>
+         stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle class="ar-outer-ring" cx="12" cy="12" r="10" stroke-dasharray="3 3" stroke-opacity="0.4" style="transform-origin: 12px 12px;" />
+      <circle cx="12" cy="12" r="8" />
+      <path class="ar-tick-hand" d="M12 7v5l3 2" style="transform-origin: 12px 12px;" />
     </svg>
     <span id="ar-badge"></span>
   `;
@@ -545,6 +639,9 @@ function openPanel() {
         <label class="ar-lbl">Resume Prompt</label>
         <textarea id="ar-prompt" class="ar-txa"
           placeholder="Continue from where we left off. Next step: ..."></textarea>
+        <div class="ar-prompt-stats">
+          <span id="ar-prompt-char-count">0 chars</span> | <span id="ar-prompt-token-count" class="stat-highlight">0 tokens</span>
+        </div>
       </div>
       <div class="ar-row2">
         <div>
@@ -624,6 +721,23 @@ function openPanel() {
     };
   });
 
+  // ── Update prompt stats
+  const promptTa = p.querySelector("#ar-prompt");
+  const charSpan = p.querySelector("#ar-prompt-char-count");
+  const tokSpan  = p.querySelector("#ar-prompt-token-count");
+
+  function updatePromptStats() {
+    if (!promptTa || !charSpan || !tokSpan) return;
+    const txt = promptTa.value || "";
+    charSpan.textContent = `${txt.length} char${txt.length === 1 ? "" : "s"}`;
+    const tokens = estimateTokens(txt);
+    tokSpan.textContent = `${tokens} token${tokens === 1 ? "" : "s"}`;
+  }
+
+  if (promptTa) {
+    promptTa.addEventListener("input", updatePromptStats);
+  }
+
   // ── Close
   p.querySelector("#ar-close").onclick = closePanel;
   setTimeout(() => document.addEventListener("click", outsideClickH), 200);
@@ -668,7 +782,10 @@ function openPanel() {
     const st = d.resumeState;
     if (sv) {
       if (sv.chatUrl) p.querySelector("#ar-url").value = sv.chatUrl;
-      if (sv.prompt)  p.querySelector("#ar-prompt").value = sv.prompt;
+      if (sv.prompt)  {
+        p.querySelector("#ar-prompt").value = sv.prompt;
+        updatePromptStats();
+      }
       if (sv.checkInterval) p.querySelector("#ar-interval").value = sv.checkInterval;
       if (!resetInfo && sv.resetMinutes) p.querySelector("#ar-mins").value = sv.resetMinutes;
     }
@@ -863,6 +980,41 @@ function escH(s) {
   return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
 
+// ── Active Input Token Counter ────────────────────────────────────────
+function updateInputTokenCounter() {
+  const input = getInput();
+  if (!input) {
+    document.getElementById("ar-input-counter")?.remove();
+    return;
+  }
+  const text = input.innerText || "";
+  const cleanText = text.trim();
+  if (!cleanText) {
+    document.getElementById("ar-input-counter")?.remove();
+    return;
+  }
+  
+  let counter = document.getElementById("ar-input-counter");
+  if (!counter) {
+    counter = document.createElement("div");
+    counter.id = "ar-input-counter";
+    counter.className = "ar-input-counter";
+    const container = input.parentElement;
+    if (container) {
+      container.style.position = container.style.position || "relative";
+      container.appendChild(counter);
+    }
+  }
+  
+  const tokens = estimateTokens(text);
+  counter.textContent = `${tokens} token${tokens === 1 ? "" : "s"}`;
+  if (tokens > 0) {
+    counter.classList.add("active");
+  } else {
+    counter.classList.remove("active");
+  }
+}
+
 // ── MutationObserver ──────────────────────────────────────────────────
 let dbT = null, fbT = null;
 const mutObs = new MutationObserver(() => {
@@ -874,15 +1026,33 @@ const mutObs = new MutationObserver(() => {
   }, 900);
   clearTimeout(fbT);
   fbT = setTimeout(() => {
-    if (!document.getElementById("ar-btn")) injectBtn();
+    if (!shouldShowBtn()) {
+      document.getElementById("ar-btn")?.remove();
+      closePanel();
+    } else if (!document.getElementById("ar-btn")) {
+      injectBtn();
+    }
   }, 1500);
+
+  // Attach input listener to Claude's input box
+  const input = getInput();
+  if (input && !input.dataset.arListenerAdded) {
+    input.dataset.arListenerAdded = "true";
+    input.addEventListener("input", updateInputTokenCounter);
+    input.addEventListener("keyup", updateInputTokenCounter);
+    updateInputTokenCounter();
+  } else if (!input) {
+    document.getElementById("ar-input-counter")?.remove();
+  }
 });
 try { mutObs.observe(document.body, { childList: true, subtree: true }); } catch {}
 
 // ── Boot ──────────────────────────────────────────────────────────────
 function boot() {
   injectStyles();
-  injectBtn();
+  if (shouldShowBtn()) {
+    injectBtn();
+  }
   safeGet("resumeState", d => { if (d?.resumeState?.active) updateBtn(d.resumeState); });
 }
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
