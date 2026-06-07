@@ -436,6 +436,22 @@
     color: var(--accent);
     font-weight: 600;
   }
+
+  .template-chip.custom {
+    border-style: dashed;
+  }
+  .template-chip-del {
+    margin-left: 5px;
+    opacity: 0.5;
+    font-weight: bold;
+    cursor: pointer;
+    transition: color 0.15s, opacity 0.15s;
+    display: inline-block;
+  }
+  .template-chip-del:hover {
+    opacity: 1;
+    color: var(--red) !important;
+  }
 </style>
 </head>
 <body>
@@ -477,13 +493,13 @@
   <div class="field">
     <label>Resume Prompt</label>
     <div class="template-chips" id="templateChips">
-      <span class="template-chip" data-tpl="Continue coding from where you left off.">Continue coding</span>
-      <span class="template-chip" data-tpl="Summarize the progress so far and outline next steps.">Summarize progress</span>
-      <span class="template-chip" data-tpl="Debug the error and fix the issue.">Debug the error</span>
-      <span class="template-chip" data-tpl="Continue from where we left off.">Continue from where we left off</span>
+      <!-- Loaded dynamically in popup.js -->
     </div>
     <textarea id="prompt" placeholder="Continue from where we left off. Next step: ..."></textarea>
-    <div class="prompt-stats" id="promptStats"><span id="promptCharCount">0 chars</span> · <span id="promptTokenCount" class="stat-highlight">0 tokens</span></div>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+      <button class="btn-ghost" id="btnSaveTemplate" style="font-size: 10px; padding: 4px 8px; border-radius: 100px;">Save as template</button>
+      <div class="prompt-stats" id="promptStats"><span id="promptCharCount">0 chars</span> · <span id="promptTokenCount" class="stat-highlight">0 tokens</span></div>
+    </div>
     <div class="helper">What should Claude do when the limit resets?</div>
   </div>
 

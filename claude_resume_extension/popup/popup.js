@@ -94,7 +94,9 @@ function renderStatus() {
     let progressLabel = "";
     if (state.limitDetectedAt && state.status === "waiting") {
       const elapsed = (Date.now() - state.limitDetectedAt) / 60000;
-      progress = Math.min(95, (elapsed / state.resetMinutes) * 100);
+      progress = state.resetMinutes > 0
+        ? Math.min(95, (elapsed / state.resetMinutes) * 100)
+        : 95;
       const remaining = Math.max(0, state.resetMinutes - elapsed);
       progressLabel = `${Math.ceil(remaining)} min remaining`;
     } else if (state.status === "done") {
@@ -173,10 +175,21 @@ function renderStatus() {
     });
 
     // Fetch live usage from the active Claude tab
-    chrome.tabs.query({ url: "*://claude.ai/*" }, tabs => {
-      const tab = tabs && tabs[0];
-      if (!tab) return;
-      chrome.tabs.sendMessage(tab.id, { type: "GET_USAGE_INFO" }, usage => {
+    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+      let tab = tabs && tabs[0];
+      if (tab && tab.url?.includes("claude.ai")) {
+        fetchUsage(tab.id);
+      } else {
+        // Fallback: search all Claude tabs
+        chrome.tabs.query({ url: "*://claude.ai/*" }, allTabs => {
+          const fallbackTab = allTabs && allTabs[0];
+          if (fallbackTab) fetchUsage(fallbackTab.id);
+        });
+      }
+    });
+
+    function fetchUsage(tabId) {
+      chrome.tabs.sendMessage(tabId, { type: "GET_USAGE_INFO" }, usage => {
         if (chrome.runtime.lastError || !usage) return;
 
         const sessionEl = $("statusSession");
@@ -199,7 +212,7 @@ function renderStatus() {
           weeklyEl.innerHTML = `<span style="color:${color};font-weight:500">${pct}%</span>${resetTxt}`;
         }
       });
-    });
+    }
   });
 }
 
@@ -262,11 +275,13 @@ function updateUI() {
 }
 
 // ── Toast notification ────────────────────────────────────────────────
+let toastTimer = null;
 function toast(msg) {
   const el = $("toast");
   el.textContent = msg;
   el.classList.add("show");
-  setTimeout(() => el.classList.remove("show"), 2200);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2200);
 }
 
 function escHtml(str) {
@@ -274,7 +289,8 @@ function escHtml(str) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 // ── Token estimation ──────────────────────────────────────────────────
@@ -293,6 +309,79 @@ function updatePromptStats() {
   const tokens = estimateTokens(text);
   $("promptCharCount").textContent = chars + " chars";
   $("promptTokenCount").textContent = tokens + " tokens";
+}
+
+// ── Prompt Templates Storage & Rendering ──────────────────────────────
+const BUILTIN_TEMPLATES = [
+  { name: "Continue coding", prompt: "Continue coding from where we left off. Pick up the next task and implement it." },
+  { name: "Summarize progress", prompt: "Summarize our progress so far and outline the remaining tasks." },
+  { name: "Debug the error", prompt: "Debug the last error we encountered. Analyze the issue and provide a fix." },
+  { name: "Continue from where we left off", prompt: "Continue from where we left off. Next step:" }
+];
+
+function getTemplates(cb) {
+  chrome.storage.local.get("customTemplates", d => {
+    const custom = d?.customTemplates || [];
+    cb([...BUILTIN_TEMPLATES, ...custom]);
+  });
+}
+
+function saveCustomTemplate(name, prompt) {
+  chrome.storage.local.get("customTemplates", d => {
+    const arr = d?.customTemplates || [];
+    arr.push({ name, prompt, custom: true });
+    if (arr.length > 10) arr.shift();
+    chrome.storage.local.set({ customTemplates: arr }, () => {
+      renderTemplates();
+    });
+  });
+}
+
+function removeCustomTemplate(idx) {
+  chrome.storage.local.get("customTemplates", d => {
+    const arr = d?.customTemplates || [];
+    arr.splice(idx, 1);
+    chrome.storage.local.set({ customTemplates: arr }, () => {
+      renderTemplates();
+    });
+  });
+}
+
+function renderTemplates() {
+  const container = $("templateChips");
+  if (!container) return;
+  getTemplates(templates => {
+    container.innerHTML = templates.map((t, i) => {
+      if (t.custom) {
+        return `<span class="template-chip custom" data-idx="${i}" title="${escHtml(t.prompt)}" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;">
+          <span>${escHtml(t.name)}</span>
+          <span class="template-chip-del" data-idx="${i}" title="Delete template">✕</span>
+        </span>`;
+      } else {
+        return `<span class="template-chip" data-idx="${i}" title="${escHtml(t.prompt)}">${escHtml(t.name)}</span>`;
+      }
+    }).join("");
+
+    container.querySelectorAll(".template-chip").forEach(chip => {
+      chip.onclick = (e) => {
+        if (e.target.classList.contains("template-chip-del")) {
+          e.stopPropagation();
+          const idx = parseInt(e.target.dataset.idx);
+          const customIdx = idx - BUILTIN_TEMPLATES.length;
+          removeCustomTemplate(customIdx);
+          toast("✓ Template deleted");
+          return;
+        }
+        const idx = parseInt(chip.dataset.idx);
+        const tpl = templates[idx];
+        if (tpl) {
+          $("prompt").value = tpl.prompt;
+          updatePromptStats();
+          $("prompt").focus();
+        }
+      };
+    });
+  });
 }
 
 // ── Load saved settings on open ───────────────────────────────────────
@@ -326,17 +415,18 @@ function autoDetectTimer() {
 // ── Init ──────────────────────────────────────────────────────────────
 updateUI();
 autoDetectTimer();
+renderTemplates();
 
 // ── Prompt textarea live token counter ────────────────────────────────
 $("prompt").addEventListener("input", updatePromptStats);
 
-// ── Template chip click handlers ──────────────────────────────────────
-document.querySelectorAll(".template-chip").forEach(chip => {
-  chip.addEventListener("click", () => {
-    $("prompt").value = chip.dataset.tpl;
-    updatePromptStats();
-    $("prompt").focus();
-  });
+// ── Save as template click handler ────────────────────────────────────
+$("btnSaveTemplate").addEventListener("click", () => {
+  const text = $("prompt").value.trim();
+  if (!text) { toast("⚠ Enter a prompt first"); return; }
+  const name = text.slice(0, 20).replace(/[^a-zA-Z0-9 ]/g, "") + (text.length > 20 ? "…" : "");
+  saveCustomTemplate(name, text);
+  toast("✓ Saved as template");
 });
 
 // Auto-refresh status every 5 seconds when popup is open

@@ -30,10 +30,12 @@ function safeSet(obj) {
 function selfDestruct() {
   try { mutObs.disconnect(); } catch {}
   try { clearInterval(pollInterval); } catch {}
+  try { clearInterval(convStatsInterval); } catch {}
   try { document.getElementById("ar-btn")?.remove(); } catch {}
   try { document.getElementById("ar-panel")?.remove(); } catch {}
   try { document.getElementById("ar-styles")?.remove(); } catch {}
   try { document.getElementById("ar-input-counter")?.remove(); } catch {}
+  try { document.getElementById("ar-conv-stats")?.remove(); } catch {}
 }
 
 // ── Message handler ───────────────────────────────────────────────────
@@ -476,7 +478,10 @@ let draftSaveTimeout = null;
 function autoSaveDraft(prompt, url) {
   clearTimeout(draftSaveTimeout);
   draftSaveTimeout = setTimeout(() => {
-    safeSet({ savedSettings: { prompt, chatUrl: url || "", resetMinutes: 0, checkInterval: 60 } });
+    safeGet("savedSettings", d => {
+      const existing = d?.savedSettings || {};
+      safeSet({ savedSettings: { ...existing, prompt, chatUrl: url || existing.chatUrl || "" } });
+    });
   }, 1200);
 }
 
@@ -818,6 +823,12 @@ function injectStyles() {
       background: rgba(124,58,237,0.12); border-color: rgba(124,58,237,0.3); color: #a78bfa;
     }
     .ar-tpl-chip.custom { border-style: dashed; }
+    .ar-tpl-del {
+      margin-left: 5px; opacity: 0.5; font-weight: bold; cursor: pointer; transition: color 0.15s, opacity 0.15s;
+    }
+    .ar-tpl-del:hover {
+      opacity: 1; color: #f87171 !important;
+    }
     .ar-tpl-save {
       padding: 4px 8px; border-radius: 100px; border: 1px dashed rgba(74,222,128,0.25);
       background: transparent; color: #4ade80; font-size: 10px;
@@ -1204,11 +1215,28 @@ function openPanel() {
     const container = p.querySelector("#ar-templates");
     if (!container) return;
     getTemplates(templates => {
-      container.innerHTML = templates.map((t, i) =>
-        `<button class="ar-tpl-chip ${t.custom ? 'custom' : ''}" data-idx="${i}" title="${escH(t.prompt)}">${escH(t.name)}</button>`
-      ).join("");
-      container.querySelectorAll(".ar-tpl-chip").forEach(chip => {
-        chip.onclick = () => {
+      container.innerHTML = templates.map((t, i) => {
+        if (t.custom) {
+          return `<span class="ar-tpl-chip custom" data-idx="${i}" title="${escH(t.prompt)}" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;">
+            <span class="ar-tpl-text" style="pointer-events:none;">${escH(t.name)}</span>
+            <span class="ar-tpl-del" data-idx="${i}" title="Delete template">✕</span>
+          </span>`;
+        } else {
+          return `<button class="ar-tpl-chip" data-idx="${i}" title="${escH(t.prompt)}">${escH(t.name)}</button>`;
+        }
+      }).join("");
+
+      container.querySelectorAll(".ar-tpl-chip, span.ar-tpl-chip").forEach(chip => {
+        chip.onclick = (e) => {
+          if (e.target.classList.contains("ar-tpl-del")) {
+            e.stopPropagation();
+            const idx = parseInt(e.target.dataset.idx);
+            const customIdx = idx - BUILTIN_TEMPLATES.length;
+            removeCustomTemplate(customIdx);
+            showToast("✓ Template deleted");
+            setTimeout(renderTemplates, 300);
+            return;
+          }
           const idx = parseInt(chip.dataset.idx);
           const tpl = templates[idx];
           if (tpl && promptTa) {
@@ -1432,7 +1460,7 @@ function updateStatusTab(state) {
                    done:"Done!", stopped:"Stopped", failed:"Failed" };
   const descs = {
     monitoring: "Watching for usage limit banner automatically",
-    waiting:    `Limit detected — sleeping ${state.resetMinutes || 180} min before checking`,
+    waiting:    `Limit detected — sleeping ${state.resetMinutes ?? 0} min before checking`,
     checking:   "Testing if the limit has cleared...",
     sending:    "Typing and sending your resume prompt",
     done:       "Prompt was sent successfully! Check your chat.",
@@ -1447,8 +1475,8 @@ function updateStatusTab(state) {
   if (prog && pf && pl) {
     if (state.status === "waiting" && state.limitDetectedAt) {
       const elapsed = (Date.now() - state.limitDetectedAt) / 60000;
-      const total   = state.resetMinutes || 180;
-      const pct     = Math.min(96, (elapsed / total) * 100);
+      const total   = state.resetMinutes ?? 0;
+      const pct     = total > 0 ? Math.min(96, (elapsed / total) * 100) : 96;
       const rem     = Math.max(0, total - elapsed);
       prog.style.display = "block";
       pf.style.width = pct + "%";
@@ -1473,7 +1501,7 @@ function updateStatusTab(state) {
     attempts: p.querySelector("#tk-attempts"),
   };
   const statusColor = { done:"green", waiting:"yellow", monitoring:"green",
-                        checking:"info", failed:"err" };
+                        checking:"muted", failed:"err" };
   if (tk.status) {
     tk.status.textContent = titles[state.status] || "—";
     tk.status.className = `ar-task-val ${statusColor[state.status] || "muted"}`;
