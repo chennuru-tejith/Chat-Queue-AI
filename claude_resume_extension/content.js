@@ -685,6 +685,58 @@ function injectStyles() {
 
     @keyframes ar-p { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.65)} }
 
+    /* Floating Action Button (FAB) fallback */
+    .ar-fab:hover {
+      background: #6d28d9 !important;
+      transform: translateY(-2px) scale(1.05) !important;
+      box-shadow: 0 6px 20px rgba(109, 40, 217, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.2) !important;
+    }
+    .ar-fab:active {
+      transform: translateY(0) scale(0.98) !important;
+    }
+    .ar-fab svg {
+      width: 20px !important;
+      height: 20px !important;
+      color: #ffffff !important;
+    }
+
+    /* FAB state overrides */
+    .ar-fab.s-mon {
+      background: #10b981 !important;
+      box-shadow: 0 4px 16px rgba(16, 185, 129, 0.4) !important;
+    }
+    .ar-fab.s-mon:hover {
+      background: #059669 !important;
+      box-shadow: 0 6px 20px rgba(5, 150, 105, 0.5) !important;
+    }
+
+    .ar-fab.s-wait {
+      background: #f59e0b !important;
+      box-shadow: 0 4px 16px rgba(245, 158, 11, 0.4) !important;
+    }
+    .ar-fab.s-wait:hover {
+      background: #d97706 !important;
+      box-shadow: 0 6px 20px rgba(217, 119, 6, 0.5) !important;
+    }
+
+    .ar-fab.s-chk {
+      background: #3b82f6 !important;
+      box-shadow: 0 4px 16px rgba(59, 130, 246, 0.4) !important;
+    }
+    .ar-fab.s-chk:hover {
+      background: #2563eb !important;
+      box-shadow: 0 6px 20px rgba(37, 99, 235, 0.5) !important;
+    }
+
+    .ar-fab.s-done {
+      background: #10b981 !important;
+      box-shadow: 0 4px 16px rgba(16, 185, 129, 0.4) !important;
+    }
+    .ar-fab.s-done:hover {
+      background: #059669 !important;
+      box-shadow: 0 6px 20px rgba(5, 150, 105, 0.5) !important;
+    }
+
     /* Panel — drops down from top-right */
     #ar-panel {
       position:fixed; width:348px;
@@ -1003,6 +1055,26 @@ function injectStyles() {
   document.head.appendChild(el);
 }
 
+function hasHeaderAnchor() {
+  const shareBtn = Array.from(document.querySelectorAll("button, div[role='button'], a, span"))
+    .find(el => el.textContent?.trim() === "Share" && el.getBoundingClientRect().top < 100 && el.getBoundingClientRect().height > 0);
+  if (shareBtn && shareBtn.parentElement) return true;
+
+  const upgradeBtn = Array.from(document.querySelectorAll("button, div[role='button'], a, span"))
+    .find(el => el.textContent?.trim()?.toLowerCase()?.includes("upgrade") && el.getBoundingClientRect().top < 100 && el.getBoundingClientRect().height > 0);
+  if (upgradeBtn && upgradeBtn.parentElement) return true;
+
+  const allBtns = Array.from(document.querySelectorAll("button"));
+  const vpW = window.innerWidth;
+  const topRightBtns = allBtns.filter(b => {
+    const r = b.getBoundingClientRect();
+    return r.top < 80 && r.top >= 0 && r.left > vpW * 0.4 && r.width > 0 && r.height > 0;
+  });
+  if (topRightBtns.length > 0) return true;
+
+  return false;
+}
+
 // ── Inject button into Claude header ─────────────────────────────────
 function shouldShowBtn() {
   const url = window.location.href;
@@ -1035,10 +1107,29 @@ function injectBtn() {
   btn.onclick = e => { e.stopPropagation(); togglePanel(); };
 
   function tryInsert() {
+    // Strategy 1: Find "Share" button in header (highly reliable on chat pages)
+    const shareBtn = Array.from(document.querySelectorAll("button, div[role='button'], a, span"))
+      .find(el => el.textContent?.trim() === "Share" && el.getBoundingClientRect().top < 100 && el.getBoundingClientRect().height > 0);
+    if (shareBtn && shareBtn.parentElement) {
+      btn.className = "";
+      btn.style.cssText = "";
+      shareBtn.parentElement.insertBefore(btn, shareBtn);
+      return true;
+    }
+
+    // Strategy 2: Find "Upgrade" button in header
+    const upgradeBtn = Array.from(document.querySelectorAll("button, div[role='button'], a, span"))
+      .find(el => el.textContent?.trim()?.toLowerCase()?.includes("upgrade") && el.getBoundingClientRect().top < 100 && el.getBoundingClientRect().height > 0);
+    if (upgradeBtn && upgradeBtn.parentElement) {
+      btn.className = "";
+      btn.style.cssText = "";
+      upgradeBtn.parentElement.insertBefore(btn, upgradeBtn);
+      return true;
+    }
+
+    // Strategy 3: Find any buttons in the top-right header area
     const allBtns = Array.from(document.querySelectorAll("button"));
     const vpW = window.innerWidth;
-
-    // Strategy 1: find buttons in header area (top 80px) and right side
     const topRightBtns = allBtns.filter(b => {
       const r = b.getBoundingClientRect();
       return r.top < 80 && r.top >= 0 && r.left > vpW * 0.4 && r.width > 0 && r.height > 0;
@@ -1048,17 +1139,18 @@ function injectBtn() {
       topRightBtns.sort((a, b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left);
       const anchor = topRightBtns[0];
       if (anchor?.parentElement) {
+        btn.className = "";
+        btn.style.cssText = "";
         anchor.parentElement.insertBefore(btn, anchor);
         return true;
       }
     }
 
-    // Strategy 2: find header/nav containers and append to the last flex/grid child area
+    // Strategy 4: Find header/nav elements and append to container
     const headerEls = document.querySelectorAll('header, nav, [role="banner"], [data-testid="header"]');
     for (const hdr of headerEls) {
       const r = hdr.getBoundingClientRect();
       if (r.top < 80 && r.height > 0 && r.height < 100) {
-        // Find the rightmost container inside
         const containers = hdr.querySelectorAll('div, span');
         const rightmost = Array.from(containers)
           .filter(c => {
@@ -1067,6 +1159,8 @@ function injectBtn() {
           })
           .sort((a, b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left);
         if (rightmost[0]) {
+          btn.className = "";
+          btn.style.cssText = "";
           rightmost[0].appendChild(btn);
           return true;
         }
@@ -1087,7 +1181,7 @@ function injectBtn() {
   let i = 0;
   function retry() {
     const ex = document.getElementById("ar-btn");
-    if (ex && ex.isConnected) return; // already injected and in DOM
+    if (ex && ex.isConnected) return; // already injected
     if (ex && !ex.isConnected) ex.remove();
     if (tryInsert()) {
       safeGet("resumeState", d => { if (d?.resumeState?.active) updateBtn(d.resumeState); });
@@ -1096,8 +1190,27 @@ function injectBtn() {
     i++;
     if (i < delays.length) setTimeout(retry, delays[i]);
     else {
-      // Final fallback: fixed position
-      btn.style.cssText = "position:fixed!important;top:8px;right:52px;z-index:2147483646;";
+      // Final fallback: floating action button (FAB) in the bottom-right corner
+      // Guaranteed to be visible, clickable, and look premium!
+      btn.className = "ar-fab";
+      btn.style.cssText = `
+        position: fixed !important;
+        bottom: 24px !important;
+        right: 24px !important;
+        width: 44px !important;
+        height: 44px !important;
+        border-radius: 50% !important;
+        background: #7c3aed !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        color: #ffffff !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        z-index: 2147483646 !important;
+        box-shadow: 0 4px 16px rgba(124, 58, 237, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.2) !important;
+        cursor: pointer !important;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+      `;
       document.body.appendChild(btn);
       safeGet("resumeState", d => { if (d?.resumeState?.active) updateBtn(d.resumeState); });
     }
@@ -1505,7 +1618,8 @@ function renderUI(state) {
 function updateBtn(state) {
   const btn = document.getElementById("ar-btn");
   if (!btn) return;
-  btn.className = "";
+  const isFab = btn.classList.contains("ar-fab");
+  btn.className = isFab ? "ar-fab" : "";
   if (!state?.active) return;
   const cls = { monitoring:"s-mon", waiting:"s-wait", checking:"s-chk",
                 sending:"s-chk", done:"s-done" }[state.status] || "s-mon";
@@ -1730,6 +1844,12 @@ function boot() {
       if (!ex || !ex.isConnected) {
         if (ex) ex.remove();
         injectBtn();
+      } else if (ex.classList.contains("ar-fab")) {
+        // It's currently in fallback FAB mode. Check if the header has loaded now!
+        if (hasHeaderAnchor()) {
+          ex.remove();
+          injectBtn(); // Upgrade it to header injection!
+        }
       }
     }
   }, 2000);
