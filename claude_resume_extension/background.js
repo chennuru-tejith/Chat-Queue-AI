@@ -140,11 +140,9 @@ function checkImmediately() {
 
         if (resp.limited) {
           onLimitDetected();
-        } else if (resp.canType && s.status === "checking") {
-          // Limit has cleared! Send now
+        } else if (resp.canType) {
+          // If we can type (whether we are checking or monitoring), send it immediately!
           attemptSend(s);
-        } else if (resp.canType && s.status === "monitoring") {
-          addLog("Monitoring — limit not yet active, watching...");
         }
       });
     });
