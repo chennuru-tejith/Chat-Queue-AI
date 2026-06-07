@@ -7,7 +7,7 @@ const MAX_ATTEMPTS = 120;
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "START_RESUME")   { startResume(msg.data);     sendResponse({ ok: true }); }
   if (msg.type === "STOP_RESUME")    { stopResume();               sendResponse({ ok: true }); }
-  if (msg.type === "LIMIT_DETECTED") { onLimitDetected();          sendResponse({ ok: true }); }
+  if (msg.type === "LIMIT_DETECTED") { onLimitDetected(msg.resetMinutes);  sendResponse({ ok: true }); }
   if (msg.type === "GET_STATUS")     {
     chrome.storage.local.get("resumeState", d => sendResponse({ state: d.resumeState || null }));
     return true;
@@ -139,7 +139,10 @@ function checkImmediately() {
         if (chrome.runtime.lastError || !resp) return;
 
         if (resp.limited) {
-          onLimitDetected();
+          chrome.tabs.sendMessage(tabId, { type: "GET_RESET_INFO" }, ri => {
+            const mins = (ri && ri.mins) ? ri.mins : 0;
+            onLimitDetected(mins);
+          });
         } else if (resp.canType) {
           // If we can type (whether we are checking or monitoring), send it immediately!
           attemptSend(s);
@@ -150,23 +153,26 @@ function checkImmediately() {
 }
 
 // ── Limit detected ────────────────────────────────────────────────────
-function onLimitDetected() {
+function onLimitDetected(detectedMins) {
   chrome.storage.local.get("resumeState", d => {
     const s = d.resumeState;
     if (!s?.active || s.limitDetectedAt) return; // already handling
 
+    const minsToWait = detectedMins || s.resetMinutes || 180;
+
     updateState(st => {
       st.limitDetectedAt = Date.now();
       st.status = "waiting";
+      st.resetMinutes = minsToWait;
       return st;
-    }, `Usage limit detected! Waiting ${s.resetMinutes} min before checking...`);
+    }, `Usage limit detected! Waiting ${minsToWait} min before checking...`);
 
     // Use alarm for the wait (survives SW sleep)
     chrome.alarms.clear(ALARM, () => {
       // During wait: alarm every 2 min to update progress
       chrome.alarms.create(ALARM, { periodInMinutes: 2 });
       // After wait: create a one-shot alarm to switch to checking
-      chrome.alarms.create("ar-wait-end", { delayInMinutes: s.resetMinutes || 1 });
+      chrome.alarms.create("ar-wait-end", { delayInMinutes: minsToWait });
     });
   });
 }

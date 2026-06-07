@@ -2,6 +2,7 @@
 // Complete rewrite: correct header injection, reliable limit detection, task overview
 
 let btnCheckInterval = null;
+let usageFetchInterval = null;
 
 // ── Context guards ────────────────────────────────────────────────────
 function isCtxValid() {
@@ -34,11 +35,13 @@ function selfDestruct() {
   try { clearInterval(pollInterval); } catch {}
   try { clearInterval(convStatsInterval); } catch {}
   try { clearInterval(btnCheckInterval); } catch {}
+  try { clearInterval(usageFetchInterval); } catch {}
   try { document.getElementById("ar-btn")?.remove(); } catch {}
   try { document.getElementById("ar-panel")?.remove(); } catch {}
   try { document.getElementById("ar-styles")?.remove(); } catch {}
   try { document.getElementById("ar-input-counter")?.remove(); } catch {}
   try { document.getElementById("ar-conv-stats")?.remove(); } catch {}
+  try { document.getElementById("ar-page-usage-bar")?.remove(); } catch {}
 }
 
 // ── Message handler ───────────────────────────────────────────────────
@@ -93,16 +96,87 @@ try {
   });
 } catch {}
 
+let latestUsageData = null;
+
+function getOrgIdFromCookie() {
+  try {
+    return document.cookie
+      .split('; ')
+      .find((row) => row.startsWith('lastActiveOrg='))
+      ?.split('=')[1] || null;
+  } catch {
+    return null;
+  }
+}
+
+let cachedUsage = null;
+let lastUsageFetchTime = 0;
+
+async function fetchClaudeUsage() {
+  const orgId = getOrgIdFromCookie();
+  if (!orgId) return null;
+  
+  const now = Date.now();
+  if (cachedUsage && (now - lastUsageFetchTime < 15000)) {
+    return cachedUsage;
+  }
+  
+  try {
+    const res = await fetch(`https://claude.ai/api/organizations/${orgId}/usage`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    
+    const info = { session: null, weekly: null };
+    
+    if (data.five_hour && typeof data.five_hour.utilization === 'number') {
+      info.session = {
+        pct: Math.round(data.five_hour.utilization),
+        reset: data.five_hour.resets_at ? parseResetTimeFromIso(data.five_hour.resets_at) : null
+      };
+    }
+    if (data.seven_day && typeof data.seven_day.utilization === 'number') {
+      info.weekly = {
+        pct: Math.round(data.seven_day.utilization),
+        reset: data.seven_day.resets_at ? parseResetTimeFromIso(data.seven_day.resets_at) : null
+      };
+    }
+    
+    cachedUsage = info;
+    lastUsageFetchTime = now;
+    return info;
+  } catch (err) {
+    console.error("AutoResume usage fetch error:", err);
+    return null;
+  }
+}
+
+async function runPeriodicUsageFetch() {
+  if (!isCtxValid()) return;
+  const data = await fetchClaudeUsage();
+  if (data) {
+    latestUsageData = data;
+    updateUsageBarOnPage();
+    // Refresh setup/status UI if panel is open
+    const activeTab = document.querySelector(".ar-tab.active")?.dataset?.tab;
+    if (activeTab === "status") {
+      refreshStatus();
+    }
+  }
+}
+
 // ── Limit & input detection ───────────────────────────────────────────
 function isLimitActive() {
   try {
+    if (latestUsageData?.session?.pct >= 100) return true;
+
     const body = document.body.innerText.toLowerCase();
 
     // Check for explicit limit phrases
     const limitPhrases = [
       "usage limit reached", "you've reached your limit",
       "try again in", "out of messages", "limit reached",
-      "over the limit", "you've hit your"
+      "over the limit", "you've hit your", "out of free messages",
+      "messages until"
     ];
     if (limitPhrases.some(p => body.includes(p))) return true;
 
@@ -163,7 +237,66 @@ function getSendBtn() {
 }
 
 // ── Auto-read reset timer ─────────────────────────────────────────────
+function parseAbsoluteResetTime(text) {
+  const m = text.match(/until\s+(\d+)(?::(\d+))?\s*(am|pm|a\.m\.|p\.m\.)/i);
+  if (m) {
+    let hour = parseInt(m[1]);
+    const min = m[2] ? parseInt(m[2]) : 0;
+    let ampm = m[3].toLowerCase().replace(/\./g, '');
+    if (ampm === "pm" && hour < 12) hour += 12;
+    if (ampm === "am" && hour === 12) hour = 0;
+    const now = new Date();
+    const resetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, min, 0, 0);
+    if (resetDate <= now) {
+      resetDate.setDate(resetDate.getDate() + 1);
+    }
+    const diffMins = Math.max(1, Math.ceil((resetDate - now) / 60000));
+    return { mins: diffMins, display: `until ${m[1]}${m[2] ? ":" + m[2] : ""} ${ampm.toUpperCase()}` };
+  }
+  const m24 = text.match(/until\s+(\d{1,2}):(\d{2})/i);
+  if (m24) {
+    const hour = parseInt(m24[1]);
+    const min = parseInt(m24[2]);
+    const now = new Date();
+    const resetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, min, 0, 0);
+    if (resetDate <= now) {
+      resetDate.setDate(resetDate.getDate() + 1);
+    }
+    const diffMins = Math.max(1, Math.ceil((resetDate - now) / 60000));
+    return { mins: diffMins, display: `until ${hour.toString().padStart(2, '0')}:${min.toString().padStart(2, '0')}` };
+  }
+  return null;
+}
+
+function parseResetTimeFromIso(isoString) {
+  try {
+    const resetTime = new Date(isoString);
+    const now = new Date();
+    const diffMs = resetTime - now;
+    if (diffMs <= 0) return null;
+    const mins = Math.max(1, Math.ceil(diffMs / 60000));
+    let display = "";
+    if (mins >= 24 * 60) {
+      const days = Math.floor(mins / (24 * 60));
+      const hours = Math.floor((mins % (24 * 60)) / 60);
+      display = `${days}d ${hours}h`;
+    } else if (mins >= 60) {
+      const hours = Math.floor(mins / 60);
+      const remMins = mins % 60;
+      display = `${hours}h ${remMins}m`;
+    } else {
+      display = `${mins}m`;
+    }
+    return { mins, display };
+  } catch {
+    return null;
+  }
+}
+
 function parseResetTime(text) {
+  const abs = parseAbsoluteResetTime(text);
+  if (abs) return abs;
+
   const patterns = [
     /resets\s+in\s+(\d+)d\s+(\d+)h/i,
     /resets\s+in\s+(\d+)h\s+(\d+)m/i,
@@ -195,6 +328,9 @@ function parseResetTime(text) {
 }
 
 function getUsageInfo() {
+  if (latestUsageData) {
+    return latestUsageData;
+  }
   const info = { session: null, weekly: null };
   try {
     const leafEls = Array.from(document.querySelectorAll("*"))
@@ -1051,6 +1187,93 @@ function injectStyles() {
       padding: 1px 4px; border: 1px solid rgba(255,255,255,0.06);
       border-radius: 3px; background: rgba(255,255,255,0.02);
     }
+
+    /* Force hide she-llac/claude-counter elements to prevent overlaps */
+    [class*="cc-"],
+    [id*="cc-"],
+    .cc-tooltip,
+    .cc-tooltipTrigger,
+    .cc-header,
+    .cc-headerItem,
+    .cc-usageRow,
+    .cc-usageGroup,
+    .cc-usageText,
+    .cc-bar {
+      display: none !important;
+    }
+
+    /* Sleek Native Usage progress bar below composer */
+    .ar-page-usage-bar {
+      width: 100%;
+      margin-top: 8px;
+      margin-bottom: 4px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      user-select: none;
+    }
+    .ar-pub-row {
+      display: flex;
+      gap: 16px;
+      width: 100%;
+    }
+    .ar-pub-col {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .ar-pub-meta {
+      display: flex;
+      align-items: center;
+      font-size: 11px;
+      line-height: 1;
+    }
+    .ar-pub-label {
+      color: #8b8ba0;
+      font-weight: 500;
+      margin-right: 4px;
+    }
+    .ar-pub-pct {
+      font-weight: 600;
+      color: #e8e8f0;
+    }
+    .light .ar-pub-pct, [class*="light"] .ar-pub-pct {
+      color: #1a1a1e;
+    }
+    .ar-pub-reset {
+      color: #5a5a6e;
+      font-size: 10px;
+      margin-left: 6px;
+      font-family: monospace;
+    }
+    .ar-pub-progress-bg {
+      height: 4px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 2px;
+      overflow: hidden;
+      width: 100%;
+    }
+    .light .ar-pub-progress-bg, [class*="light"] .ar-pub-progress-bg {
+      background: rgba(0, 0, 0, 0.06);
+    }
+    .ar-pub-progress-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s;
+      width: 0%;
+    }
+    .ar-pub-fill-green {
+      background: #10b981;
+    }
+    .ar-pub-fill-yellow {
+      background: #f59e0b;
+    }
+    .ar-pub-fill-red {
+      background: #ef4444;
+    }
+    .ar-pub-fill-blue {
+      background: #3b82f6;
+    }
   `;
   document.head.appendChild(el);
 }
@@ -1805,6 +2028,110 @@ function updateInputTokenCounter() {
   }
 }
 
+function getUsageBarAnchor() {
+  const input = getInput();
+  if (!input) return null;
+  
+  let anchor = input.parentElement;
+  while (anchor && anchor !== document.body) {
+    if (anchor.tagName === 'FORM') return anchor;
+    if (anchor.classList.contains('bg-background') || 
+        anchor.querySelector('button[aria-label="Send message"]') ||
+        anchor.querySelector('button[data-testid="send-button"]')) {
+      return anchor;
+    }
+    anchor = anchor.parentElement;
+  }
+  return input.parentElement;
+}
+
+function updateUsageBarOnPage() {
+  if (!isCtxValid()) return;
+  const anchor = getUsageBarAnchor();
+  if (!anchor) {
+    document.getElementById("ar-page-usage-bar")?.remove();
+    return;
+  }
+  
+  let bar = document.getElementById("ar-page-usage-bar");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "ar-page-usage-bar";
+    bar.className = "ar-page-usage-bar";
+    bar.innerHTML = `
+      <div class="ar-pub-row">
+        <div class="ar-pub-col">
+          <div class="ar-pub-meta">
+            <span class="ar-pub-label">Session:</span>
+            <span class="ar-pub-pct" id="ar-pub-session-pct">—</span>
+            <span class="ar-pub-reset" id="ar-pub-session-reset"></span>
+          </div>
+          <div class="ar-pub-progress-bg">
+            <div class="ar-pub-progress-fill" id="ar-pub-session-fill" style="width: 0%"></div>
+          </div>
+        </div>
+        <div class="ar-pub-col">
+          <div class="ar-pub-meta">
+            <span class="ar-pub-label">Weekly:</span>
+            <span class="ar-pub-pct" id="ar-pub-weekly-pct">—</span>
+            <span class="ar-pub-reset" id="ar-pub-weekly-reset"></span>
+          </div>
+          <div class="ar-pub-progress-bg">
+            <div class="ar-pub-progress-fill" id="ar-pub-weekly-fill" style="width: 0%"></div>
+          </div>
+        </div>
+      </div>
+    `;
+    anchor.parentNode.insertBefore(bar, anchor.nextSibling);
+  }
+  
+  const info = getUsageInfo();
+  
+  const sessPct = document.getElementById("ar-pub-session-pct");
+  const sessReset = document.getElementById("ar-pub-session-reset");
+  const sessFill = document.getElementById("ar-pub-session-fill");
+  
+  const weekPct = document.getElementById("ar-pub-weekly-pct");
+  const weekReset = document.getElementById("ar-pub-weekly-reset");
+  const weekFill = document.getElementById("ar-pub-weekly-fill");
+  
+  if (sessPct && sessReset && sessFill) {
+    if (info.session) {
+      const pct = info.session.pct;
+      sessPct.textContent = `${pct}%`;
+      sessFill.style.width = `${pct}%`;
+      sessFill.className = "ar-pub-progress-fill " + (pct >= 100 ? "ar-pub-fill-red" : pct >= 80 ? "ar-pub-fill-yellow" : "ar-pub-fill-green");
+      if (info.session.reset) {
+        sessReset.textContent = `· resets in ${info.session.reset.display}`;
+      } else {
+        sessReset.textContent = "";
+      }
+    } else {
+      sessPct.textContent = "—";
+      sessFill.style.width = "0%";
+      sessReset.textContent = "";
+    }
+  }
+  
+  if (weekPct && weekReset && weekFill) {
+    if (info.weekly) {
+      const pct = info.weekly.pct;
+      weekPct.textContent = `${pct}%`;
+      weekFill.style.width = `${pct}%`;
+      weekFill.className = "ar-pub-progress-fill " + (pct >= 100 ? "ar-pub-fill-red" : pct >= 80 ? "ar-pub-fill-yellow" : "ar-pub-fill-blue");
+      if (info.weekly.reset) {
+        weekReset.textContent = `· resets in ${info.weekly.reset.display}`;
+      } else {
+        weekReset.textContent = "";
+      }
+    } else {
+      weekPct.textContent = "—";
+      weekFill.style.width = "0%";
+      weekReset.textContent = "";
+    }
+  }
+}
+
 // ── MutationObserver ──────────────────────────────────────────────────
 let dbT = null;
 const mutObs = new MutationObserver(() => {
@@ -1812,7 +2139,10 @@ const mutObs = new MutationObserver(() => {
   clearTimeout(dbT);
   dbT = setTimeout(() => {
     if (!isCtxValid()) { selfDestruct(); return; }
-    if (isLimitActive()) safeSend({ type: "LIMIT_DETECTED" });
+    if (isLimitActive()) {
+      const ri = getResetInfo();
+      safeSend({ type: "LIMIT_DETECTED", resetMinutes: ri ? ri.mins : 0 });
+    }
   }, 900);
 
   // Attach input listener to Claude's input box
@@ -1825,6 +2155,9 @@ const mutObs = new MutationObserver(() => {
   } else if (!input) {
     document.getElementById("ar-input-counter")?.remove();
   }
+
+  // Update native usage bar
+  updateUsageBarOnPage();
 });
 try { mutObs.observe(document.body, { childList: true, subtree: true }); } catch {}
 
@@ -1853,6 +2186,11 @@ function boot() {
       }
     }
   }, 2000);
+
+  // Periodic usage checks
+  clearInterval(usageFetchInterval);
+  runPeriodicUsageFetch();
+  usageFetchInterval = setInterval(runPeriodicUsageFetch, 30000);
 
   if (shouldShowBtn()) {
     injectBtn();
