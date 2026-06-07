@@ -1,6 +1,8 @@
 // Claude AutoResume — Content Script v4
 // Complete rewrite: correct header injection, reliable limit detection, task overview
 
+let btnCheckInterval = null;
+
 // ── Context guards ────────────────────────────────────────────────────
 function isCtxValid() {
   try { return !!(chrome?.runtime?.id); } catch { return false; }
@@ -31,6 +33,7 @@ function selfDestruct() {
   try { mutObs.disconnect(); } catch {}
   try { clearInterval(pollInterval); } catch {}
   try { clearInterval(convStatsInterval); } catch {}
+  try { clearInterval(btnCheckInterval); } catch {}
   try { document.getElementById("ar-btn")?.remove(); } catch {}
   try { document.getElementById("ar-panel")?.remove(); } catch {}
   try { document.getElementById("ar-styles")?.remove(); } catch {}
@@ -543,10 +546,10 @@ function injectStyles() {
       width: 32px;
       height: 32px;
       border-radius: 9px;
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(124, 58, 237, 0.22);
+      background: rgba(124, 58, 237, 0.05);
       cursor: pointer;
-      color: #9b9ba8;
+      color: #6d28d9; /* Deep violet for light theme */
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -554,15 +557,30 @@ function injectStyles() {
       flex-shrink: 0;
       transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
       vertical-align: middle;
-      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+      box-shadow: 0 1px 2px rgba(124, 58, 237, 0.08);
     }
     #ar-btn:hover {
-      background: rgba(255, 255, 255, 0.06);
-      border-color: rgba(167, 139, 250, 0.35);
-      color: #f3f4f6;
-      box-shadow: 0 0 10px rgba(167, 139, 250, 0.15);
+      background: rgba(124, 58, 237, 0.12);
+      border-color: rgba(124, 58, 237, 0.45);
+      color: #5b21b6;
+      box-shadow: 0 0 10px rgba(124, 58, 237, 0.2);
       transform: translateY(-1px);
     }
+    
+    /* Dark mode override */
+    .dark #ar-btn, [class*="dark"] #ar-btn {
+      color: #a78bfa; /* Lighter violet for dark mode */
+      border-color: rgba(167, 139, 250, 0.3);
+      background: rgba(167, 139, 250, 0.07);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+    }
+    .dark #ar-btn:hover, [class*="dark"] #ar-btn:hover {
+      color: #c084fc;
+      border-color: rgba(167, 139, 250, 0.5);
+      background: rgba(167, 139, 250, 0.15);
+      box-shadow: 0 0 10px rgba(167, 139, 250, 0.25);
+    }
+
     #ar-btn:active {
       transform: translateY(0);
     }
@@ -573,7 +591,7 @@ function injectStyles() {
       transition: color 0.25s;
     }
     #ar-btn:hover svg {
-      color: #a78bfa;
+      color: currentColor;
     }
     #ar-btn:hover svg .ar-outer-ring {
       animation: ar-spin-ring 12s linear infinite;
@@ -590,11 +608,81 @@ function injectStyles() {
       position:absolute; top:5px; right:5px; width:7px; height:7px;
       border-radius:50%; border:1.5px solid #1a1a1e; display:none;
     }
-    #ar-btn.s-mon  { color:#a78bfa; }
-    #ar-btn.s-mon  #ar-badge { display:block; background:#4ade80; animation:ar-p 2s infinite; }
-    #ar-btn.s-wait #ar-badge { display:block; background:#facc15; animation:ar-p 2s infinite; }
-    #ar-btn.s-chk  #ar-badge { display:block; background:#60a5fa; animation:ar-p 0.7s infinite; }
-    #ar-btn.s-done #ar-badge { display:block; background:#4ade80; }
+
+    /* State styles (Light Theme) */
+    #ar-btn.s-mon {
+      color: #059669; border-color: rgba(5, 150, 105, 0.35); background: rgba(5, 150, 105, 0.06);
+    }
+    #ar-btn.s-mon:hover {
+      color: #047857; border-color: rgba(5, 150, 105, 0.55); background: rgba(5, 150, 105, 0.12);
+      box-shadow: 0 0 10px rgba(5, 150, 105, 0.2);
+    }
+    #ar-btn.s-mon #ar-badge { display:block; background:#10b981; border-color:#fff; animation:ar-p 2s infinite; }
+
+    #ar-btn.s-wait {
+      color: #d97706; border-color: rgba(217, 119, 6, 0.35); background: rgba(217, 119, 6, 0.06);
+    }
+    #ar-btn.s-wait:hover {
+      color: #b45309; border-color: rgba(217, 119, 6, 0.55); background: rgba(217, 119, 6, 0.12);
+      box-shadow: 0 0 10px rgba(217, 119, 6, 0.2);
+    }
+    #ar-btn.s-wait #ar-badge { display:block; background:#f59e0b; border-color:#fff; animation:ar-p 2s infinite; }
+
+    #ar-btn.s-chk {
+      color: #2563eb; border-color: rgba(37, 99, 235, 0.35); background: rgba(37, 99, 235, 0.06);
+    }
+    #ar-btn.s-chk:hover {
+      color: #1d4ed8; border-color: rgba(37, 99, 235, 0.55); background: rgba(37, 99, 235, 0.12);
+      box-shadow: 0 0 10px rgba(37, 99, 235, 0.2);
+    }
+    #ar-btn.s-chk #ar-badge { display:block; background:#3b82f6; border-color:#fff; animation:ar-p 0.7s infinite; }
+
+    #ar-btn.s-done {
+      color: #059669; border-color: rgba(5, 150, 105, 0.35); background: rgba(5, 150, 105, 0.06);
+    }
+    #ar-btn.s-done:hover {
+      color: #047857; border-color: rgba(5, 150, 105, 0.55); background: rgba(5, 150, 105, 0.12);
+      box-shadow: 0 0 10px rgba(5, 150, 105, 0.2);
+    }
+    #ar-btn.s-done #ar-badge { display:block; background:#10b981; border-color:#fff; }
+
+    /* State styles (Dark Theme) */
+    .dark #ar-btn.s-mon, [class*="dark"] #ar-btn.s-mon {
+      color: #34d399; border-color: rgba(52, 211, 153, 0.35); background: rgba(52, 211, 153, 0.08);
+    }
+    .dark #ar-btn.s-mon:hover, [class*="dark"] #ar-btn.s-mon:hover {
+      color: #6ee7b7; border-color: rgba(52, 211, 153, 0.55); background: rgba(52, 211, 153, 0.15);
+      box-shadow: 0 0 10px rgba(52, 211, 153, 0.25);
+    }
+    .dark #ar-btn.s-mon #ar-badge, [class*="dark"] #ar-btn.s-mon #ar-badge { border-color:#1a1a1e; }
+
+    .dark #ar-btn.s-wait, [class*="dark"] #ar-btn.s-wait {
+      color: #fbbf24; border-color: rgba(251, 191, 36, 0.35); background: rgba(251, 191, 36, 0.08);
+    }
+    .dark #ar-btn.s-wait:hover, [class*="dark"] #ar-btn.s-wait:hover {
+      color: #fde047; border-color: rgba(251, 191, 36, 0.55); background: rgba(251, 191, 36, 0.15);
+      box-shadow: 0 0 10px rgba(251, 191, 36, 0.25);
+    }
+    .dark #ar-btn.s-wait #ar-badge, [class*="dark"] #ar-btn.s-wait #ar-badge { border-color:#1a1a1e; }
+
+    .dark #ar-btn.s-chk, [class*="dark"] #ar-btn.s-chk {
+      color: #60a5fa; border-color: rgba(96, 165, 250, 0.35); background: rgba(96, 165, 250, 0.08);
+    }
+    .dark #ar-btn.s-chk:hover, [class*="dark"] #ar-btn.s-chk:hover {
+      color: #93c5fd; border-color: rgba(96, 165, 250, 0.55); background: rgba(96, 165, 250, 0.15);
+      box-shadow: 0 0 10px rgba(96, 165, 250, 0.25);
+    }
+    .dark #ar-btn.s-chk #ar-badge, [class*="dark"] #ar-btn.s-chk #ar-badge { border-color:#1a1a1e; }
+
+    .dark #ar-btn.s-done, [class*="dark"] #ar-btn.s-done {
+      color: #34d399; border-color: rgba(52, 211, 153, 0.35); background: rgba(52, 211, 153, 0.08);
+    }
+    .dark #ar-btn.s-done:hover, [class*="dark"] #ar-btn.s-done:hover {
+      color: #6ee7b7; border-color: rgba(52, 211, 153, 0.55); background: rgba(52, 211, 153, 0.15);
+      box-shadow: 0 0 10px rgba(52, 211, 153, 0.25);
+    }
+    .dark #ar-btn.s-done #ar-badge, [class*="dark"] #ar-btn.s-done #ar-badge { border-color:#1a1a1e; }
+
     @keyframes ar-p { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.65)} }
 
     /* Panel — drops down from top-right */
@@ -1604,7 +1692,7 @@ function updateInputTokenCounter() {
 }
 
 // ── MutationObserver ──────────────────────────────────────────────────
-let dbT = null, fbT = null;
+let dbT = null;
 const mutObs = new MutationObserver(() => {
   if (!isCtxValid()) { mutObs.disconnect(); selfDestruct(); return; }
   clearTimeout(dbT);
@@ -1612,19 +1700,6 @@ const mutObs = new MutationObserver(() => {
     if (!isCtxValid()) { selfDestruct(); return; }
     if (isLimitActive()) safeSend({ type: "LIMIT_DETECTED" });
   }, 900);
-  clearTimeout(fbT);
-  fbT = setTimeout(() => {
-    if (!shouldShowBtn()) {
-      document.getElementById("ar-btn")?.remove();
-      closePanel();
-    } else {
-      const ex = document.getElementById("ar-btn");
-      if (!ex || !ex.isConnected) {
-        if (ex) ex.remove();
-        injectBtn();
-      }
-    }
-  }, 1500);
 
   // Attach input listener to Claude's input box
   const input = getInput();
@@ -1642,6 +1717,23 @@ try { mutObs.observe(document.body, { childList: true, subtree: true }); } catch
 // ── Boot ──────────────────────────────────────────────────────────────
 function boot() {
   injectStyles();
+
+  // Start periodic check for button presence to handle SPA navigations reliably
+  clearInterval(btnCheckInterval);
+  btnCheckInterval = setInterval(() => {
+    if (!isCtxValid()) { clearInterval(btnCheckInterval); return; }
+    if (!shouldShowBtn()) {
+      document.getElementById("ar-btn")?.remove();
+      closePanel();
+    } else {
+      const ex = document.getElementById("ar-btn");
+      if (!ex || !ex.isConnected) {
+        if (ex) ex.remove();
+        injectBtn();
+      }
+    }
+  }, 2000);
+
   if (shouldShowBtn()) {
     injectBtn();
   }
