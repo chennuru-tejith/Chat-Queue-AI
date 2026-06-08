@@ -36,7 +36,7 @@
 1.  Download or clone this repository to your local machine.
 2.  Open Chrome (or Brave, Edge, Opera) and navigate to `chrome://extensions`.
 3.  Toggle the **Developer mode** switch in the top-right corner.
-4.  Click **Load unpacked** in the top-left and select the `claude_resume_extension` folder.
+4.  Click **Load unpacked** in the top-left and select the root folder of the downloaded project (where `manifest.json` is located).
 
 ### 2. How to Use
 1.  Open the Claude chat you want to automate.
@@ -53,12 +53,13 @@
 ## 🛠 Repository Structure
 
 ```text
-claude_resume_extension/
-  ├── manifest.json      # Extension metadata
-  ├── background.js       # Background service worker (alarms, tabs, limits)
-  ├── content.js          # In-page UI, limit checkers, API fetchers
-  ├── icons/              # Extension logo icons
-  └── popup/              # Toolbar popup UI (html, js, css)
+├── manifest.json      # Extension metadata
+├── background.js       # Background service worker (alarms, tabs, limits)
+├── content.js          # In-page UI, limit checkers, API fetchers
+├── icons/              # Extension logo icons
+├── popup/              # Toolbar popup UI (html, js, css)
+├── LICENSE             # Project license
+└── README.md           # Documentation
 ```
 
 ---

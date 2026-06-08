@@ -1,0 +1,28 @@
+name: Release Extension
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Package and Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Package Extension ZIP
+        run: |
+          zip -r claude-autoresume.zip manifest.json background.js content.js icons popup LICENSE
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: claude-autoresume.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
