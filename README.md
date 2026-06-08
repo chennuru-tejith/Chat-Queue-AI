@@ -33,10 +33,10 @@
 ## 🚀 Quick Start
 
 ### 1. Install locally (Developer Mode)
-1.  Download or clone this repository to your local machine.
+1.  [📥 Download the Pre-packaged ZIP](https://github.com/chennuru-tejith/Claude-Chat-Resume-Bot/raw/main/claude-autoresume.zip) and extract it (or clone this repository) to your local machine.
 2.  Open Chrome (or Brave, Edge, Opera) and navigate to `chrome://extensions`.
 3.  Toggle the **Developer mode** switch in the top-right corner.
-4.  Click **Load unpacked** in the top-left and select the root folder of the downloaded project (where `manifest.json` is located).
+4.  Click **Load unpacked** in the top-left and select the extracted folder (where `manifest.json` is located).
 
 ### 2. How to Use
 1.  Open the Claude chat you want to automate.
