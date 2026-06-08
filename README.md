@@ -28,16 +28,7 @@
 *   🔔 **Sound Chime & Desktop Notifications**: Soft harmonic arpeggios play and chrome notifications trigger when your prompt successfully sends.
 *   ⌨️ **Quick Keyboard Shortcuts**: Toggle panel (`Alt+Shift+R`) and start/stop AutoResume (`Alt+Shift+S`) instantly.
 
----
 
-## 📸 Interface Preview
-
-<p align="center">
-  <img src="assets/screenshot_page.png" alt="Composer Usage Bar Interface" width="48%">
-  <img src="assets/screenshot_panel.png" alt="Control Panel Interface" width="48%">
-</p>
-
----
 
 ## 🚀 Quick Start
 
