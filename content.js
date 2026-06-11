@@ -33,14 +33,12 @@ function safeSet(obj) {
 function selfDestruct() {
   try { mutObs.disconnect(); } catch {}
   try { clearInterval(pollInterval); } catch {}
-  try { clearInterval(convStatsInterval); } catch {}
   try { clearInterval(btnCheckInterval); } catch {}
   try { clearInterval(usageFetchInterval); } catch {}
   try { document.getElementById("ar-btn")?.remove(); } catch {}
   try { document.getElementById("ar-panel")?.remove(); } catch {}
   try { document.getElementById("ar-styles")?.remove(); } catch {}
   try { document.getElementById("ar-input-counter")?.remove(); } catch {}
-  try { document.getElementById("ar-conv-stats")?.remove(); } catch {}
   try { document.getElementById("ar-page-usage-bar")?.remove(); } catch {}
 }
 
@@ -454,163 +452,7 @@ function playNotificationChime() {
   } catch {}
 }
 
-// ── Conversation Stats ────────────────────────────────────────────────
-let convStatsVisible = false;
-let convStatsInterval = null;
 
-function countConversationStats() {
-  try {
-    const userMsgs = document.querySelectorAll('[data-testid*="user-message"], .font-user-message, [data-is-streaming="false"]');
-    const allMsgBlocks = document.querySelectorAll('[data-testid*="message"], .font-claude-message, .font-user-message');
-    let totalText = "";
-    allMsgBlocks.forEach(el => { totalText += (el.innerText || "") + " "; });
-    const userCount = Math.max(
-      userMsgs.length,
-      document.querySelectorAll('[class*="user"]').length > 0
-        ? document.querySelectorAll('div[data-testid]').length / 2
-        : 0
-    );
-    // Fallback: count by alternating message containers
-    const msgContainers = document.querySelectorAll('div.group\\/conversation-turn');
-    const actualCount = msgContainers.length || Math.ceil(userCount);
-
-    const tokens = estimateTokens(totalText);
-    return { messages: actualCount, tokens, textLength: totalText.length };
-  } catch {
-    return { messages: 0, tokens: 0, textLength: 0 };
-  }
-}
-
-function showConvStats() {
-  if (document.getElementById("ar-conv-stats")) return;
-  convStatsVisible = true;
-  safeSet({ convStatsVisible: true });
-
-  function render() {
-    const stats = countConversationStats();
-    let el = document.getElementById("ar-conv-stats");
-    if (!el) {
-      el = document.createElement("div");
-      el.id = "ar-conv-stats";
-      document.body.appendChild(el);
-    }
-    el.innerHTML = `
-      <span class="ar-cs-item"><span class="ar-cs-icon">💬</span><span class="ar-cs-val">${stats.messages}</span> msgs</span>
-      <span class="ar-cs-item"><span class="ar-cs-icon">🔤</span><span class="ar-cs-val">~${stats.tokens > 1000 ? (stats.tokens / 1000).toFixed(1) + "k" : stats.tokens}</span> tokens</span>
-      <button class="ar-cs-close" id="ar-cs-close">✕</button>
-    `;
-    el.querySelector("#ar-cs-close").onclick = hideConvStats;
-  }
-
-  render();
-  convStatsInterval = setInterval(render, 5000);
-}
-
-function hideConvStats() {
-  convStatsVisible = false;
-  safeSet({ convStatsVisible: false });
-  document.getElementById("ar-conv-stats")?.remove();
-  if (convStatsInterval) { clearInterval(convStatsInterval); convStatsInterval = null; }
-}
-
-// ── Usage History & Sparkline ─────────────────────────────────────────
-function recordUsageSnapshot() {
-  const usage = getUsageInfo();
-  if (!usage.session && !usage.weekly) return;
-  safeGet("usageHistory", d => {
-    const history = d?.usageHistory || [];
-    history.push({
-      t: Date.now(),
-      s: usage.session?.pct ?? null,
-      w: usage.weekly?.pct ?? null,
-    });
-    if (history.length > 50) history.splice(0, history.length - 50);
-    safeSet({ usageHistory: history });
-  });
-}
-
-function renderSparkline(containerId) {
-  safeGet("usageHistory", d => {
-    const el = document.getElementById(containerId);
-    if (!el) return;
-    const history = d?.usageHistory || [];
-    if (history.length < 2) {
-      el.innerHTML = `<div class="ar-sparkline-title">Usage Trend</div>
-        <div style="font-size:10px;color:#3e3e50;text-align:center;padding:8px 0;">Not enough data yet</div>`;
-      return;
-    }
-
-    const pts = history.map(h => h.s ?? 0);
-    const max = Math.max(...pts, 100);
-    const w = 300, h = 36;
-    const step = w / (pts.length - 1);
-
-    const pathD = pts.map((v, i) => {
-      const x = i * step;
-      const y = h - (v / max) * h;
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(" ");
-
-    const areaD = pathD + ` L${w},${h} L0,${h} Z`;
-
-    el.innerHTML = `
-      <div class="ar-sparkline-title">Session Usage Trend</div>
-      <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-        <defs>
-          <linearGradient id="ar-sg" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="#7c3aed" stop-opacity="0.3"/>
-            <stop offset="100%" stop-color="#7c3aed" stop-opacity="0"/>
-          </linearGradient>
-        </defs>
-        <path d="${areaD}" fill="url(#ar-sg)" />
-        <path d="${pathD}" fill="none" stroke="#a78bfa" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        <circle cx="${(pts.length - 1) * step}" cy="${h - (pts[pts.length - 1] / max) * h}" r="2.5" fill="#a78bfa"/>
-      </svg>
-    `;
-  });
-}
-
-// ── Export/Import Settings ─────────────────────────────────────────────
-function exportSettings() {
-  safeGet(["savedSettings", "customTemplates", "usageHistory"], d => {
-    const data = {
-      version: "1.0.0",
-      exportedAt: new Date().toISOString(),
-      savedSettings: d.savedSettings || {},
-      customTemplates: d.customTemplates || [],
-      usageHistory: d.usageHistory || [],
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `autoresume-settings-${Date.now()}.json`;
-    document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
-    showToast("✓ Settings exported");
-  });
-}
-
-function importSettings() {
-  const input = document.createElement("input");
-  input.type = "file"; input.accept = ".json";
-  input.onchange = e => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => {
-      try {
-        const data = JSON.parse(ev.target.result);
-        if (data.savedSettings) safeSet({ savedSettings: data.savedSettings });
-        if (data.customTemplates) safeSet({ customTemplates: data.customTemplates });
-        if (data.usageHistory) safeSet({ usageHistory: data.usageHistory });
-        showToast("✓ Settings imported — reopen panel");
-        closePanel();
-      } catch { showToast("⚠ Invalid settings file"); }
-    };
-    reader.readAsText(file);
-  };
-  input.click();
-}
 
 // ── Auto-Save Draft ───────────────────────────────────────────────────
 let draftSaveTimeout = null;
@@ -1133,54 +975,6 @@ function injectStyles() {
     }
     .ar-toggle:checked::after { transform: translateX(14px); }
 
-    /* Export/Import */
-    .ar-export-row {
-      display: flex; gap: 6px; margin-top: 4px;
-    }
-    .ar-btn-sm {
-      flex: 1; padding: 6px 8px; border-radius: 7px;
-      border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.03);
-      color: #8b8ba0; font-size: 10px; font-weight: 500; cursor: pointer;
-      font-family: inherit; transition: all 0.15s; text-align: center;
-    }
-    .ar-btn-sm:hover { background: rgba(255,255,255,0.06); color: #d4d4e0; }
-
-    /* Sparkline */
-    .ar-sparkline-wrap {
-      padding: 8px 11px; border-radius: 10px;
-      background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05);
-    }
-    .ar-sparkline-title {
-      font-size: 10px; color: #4a4a5e; text-transform: uppercase;
-      letter-spacing: 0.5px; font-weight: 600; margin-bottom: 6px;
-    }
-    .ar-sparkline svg { width: 100%; height: 40px; }
-
-    /* Conversation Stats Overlay */
-    #ar-conv-stats {
-      position: fixed; bottom: 60px; right: 16px; z-index: 2147483640;
-      background: rgba(16,16,20,0.92); border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 10px; padding: 8px 12px;
-      font-family: -apple-system,'Segoe UI',sans-serif;
-      font-size: 11px; color: #9b9ba8;
-      backdrop-filter: blur(12px);
-      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-      display: flex; gap: 12px; align-items: center;
-      transition: all 0.25s ease; cursor: default;
-      opacity: 0.7;
-    }
-    #ar-conv-stats:hover { opacity: 1; border-color: rgba(124,58,237,0.25); }
-    .ar-cs-item { display: flex; align-items: center; gap: 4px; }
-    .ar-cs-icon { font-size: 10px; opacity: 0.6; }
-    .ar-cs-val { color: #d4d4e0; font-weight: 500; font-family: monospace; font-size: 11px; }
-    .ar-cs-close {
-      width: 16px; height: 16px; border-radius: 4px; border: none;
-      background: rgba(255,255,255,0.06); color: #5a5a6e; font-size: 9px;
-      cursor: pointer; display: flex; align-items: center; justify-content: center;
-      transition: all 0.15s; margin-left: 2px;
-    }
-    .ar-cs-close:hover { background: rgba(255,255,255,0.12); color: #f0f0f4; }
-
     /* Keyboard shortcut hint */
     .ar-shortcut {
       font-size: 9px; color: #3a3a4e; font-family: monospace;
@@ -1529,20 +1323,12 @@ function openPanel() {
         <input type="checkbox" class="ar-toggle" id="ar-sound-toggle" checked />
       </div>
       <div class="ar-settings-row">
-        <span class="ar-settings-label">📊 Conversation stats</span>
-        <input type="checkbox" class="ar-toggle" id="ar-stats-toggle" />
-      </div>
-      <div class="ar-settings-row">
         <span class="ar-settings-label">⌨ Shortcuts</span>
         <span><span class="ar-shortcut">Alt+Shift+R</span> panel · <span class="ar-shortcut">Alt+Shift+S</span> start/stop</span>
       </div>
       <div class="ar-div"></div>
       <button class="ar-btn-primary" id="ar-start">▶&nbsp; Start AutoResume</button>
       <button class="ar-btn-danger"  id="ar-stop" style="display:none">■&nbsp; Stop</button>
-      <div class="ar-export-row">
-        <button class="ar-btn-sm" id="ar-export">📤 Export Settings</button>
-        <button class="ar-btn-sm" id="ar-import">📥 Import Settings</button>
-      </div>
     </div>
 
     <!-- STATUS TAB -->
@@ -1588,7 +1374,6 @@ function openPanel() {
           <span class="ar-task-val muted" id="tk-attempts">0</span>
         </div>
       </div>
-      <div class="ar-sparkline-wrap" id="ar-sparkline"></div>
       <button class="ar-btn-danger" id="ar-stop2" style="display:none">■&nbsp; Stop AutoResume</button>
     </div>
 
@@ -1608,7 +1393,7 @@ function openPanel() {
       tab.classList.add("active");
       p.querySelector(`#ar-t-${tab.dataset.tab}`).classList.add("active");
       if (tab.dataset.tab === "log") refreshLog();
-      if (tab.dataset.tab === "status") { refreshStatus(); renderSparkline("ar-sparkline"); }
+      if (tab.dataset.tab === "status") refreshStatus();
     };
   });
 
@@ -1698,25 +1483,6 @@ function openPanel() {
     };
   }
 
-  // ── Conversation stats toggle
-  const statsToggle = p.querySelector("#ar-stats-toggle");
-  if (statsToggle) {
-    safeGet("convStatsVisible", d => {
-      statsToggle.checked = !!d?.convStatsVisible;
-      if (d?.convStatsVisible && location.href.includes("/chat/")) showConvStats();
-    });
-    statsToggle.onchange = () => {
-      if (statsToggle.checked) showConvStats();
-      else hideConvStats();
-    };
-  }
-
-  // ── Export/Import
-  const exportBtn = p.querySelector("#ar-export");
-  const importBtn = p.querySelector("#ar-import");
-  if (exportBtn) exportBtn.onclick = exportSettings;
-  if (importBtn) importBtn.onclick = importSettings;
-
   // ── Close
   p.querySelector("#ar-close").onclick = closePanel;
   setTimeout(() => document.addEventListener("click", outsideClickH), 200);
@@ -1775,22 +1541,18 @@ function openPanel() {
 
   // ── Poll every 4s to refresh status + log
   if (pollInterval) clearInterval(pollInterval);
-  let pollCount = 0;
   pollInterval = setInterval(() => {
     if (!isCtxValid() || !document.getElementById("ar-panel")) {
       clearInterval(pollInterval); pollInterval = null; return;
     }
     const activeTab = p.querySelector(".ar-tab.active")?.dataset?.tab;
-    if (activeTab === "status") { refreshStatus(); renderSparkline("ar-sparkline"); }
+    if (activeTab === "status") refreshStatus();
     if (activeTab === "log")    refreshLog();
     // Refresh auto-detect
     const ri = getResetInfo();
     if (ri && p.querySelector("#ar-start").style.display !== "none") {
       p.querySelector("#ar-mins").value = ri.mins;
     }
-    // Record usage snapshot every ~30s (every 7-8 polls)
-    pollCount++;
-    if (pollCount % 8 === 0) recordUsageSnapshot();
   }, 4000);
 }
 
@@ -2143,6 +1905,8 @@ const mutObs = new MutationObserver(() => {
       const ri = getResetInfo();
       safeSend({ type: "LIMIT_DETECTED", resetMinutes: ri ? ri.mins : 0 });
     }
+    // Update native usage bar
+    updateUsageBarOnPage();
   }, 900);
 
   // Attach input listener to Claude's input box
@@ -2155,9 +1919,6 @@ const mutObs = new MutationObserver(() => {
   } else if (!input) {
     document.getElementById("ar-input-counter")?.remove();
   }
-
-  // Update native usage bar
-  updateUsageBarOnPage();
 });
 try { mutObs.observe(document.body, { childList: true, subtree: true }); } catch {}
 

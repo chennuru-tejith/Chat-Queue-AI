@@ -13,22 +13,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // ── Usage history ────────────────────────────────────────────────
-  if (msg.type === "RECORD_USAGE") {
-    const point = { t: Date.now(), s: msg.data.session, w: msg.data.weekly };
-    chrome.storage.local.get("usageHistory", d => {
-      const history = d.usageHistory || [];
-      history.push(point);
-      if (history.length > 50) history.splice(0, history.length - 50);
-      chrome.storage.local.set({ usageHistory: history }, () => sendResponse({ ok: true }));
-    });
-    return true;
-  }
-  if (msg.type === "GET_USAGE_HISTORY") {
-    chrome.storage.local.get("usageHistory", d => sendResponse({ history: d.usageHistory || [] }));
-    return true;
-  }
-
   // ── Sound preference ─────────────────────────────────────────────
   if (msg.type === "SET_SOUND_PREF") {
     chrome.storage.local.set({ soundEnabled: msg.data.enabled }, () => sendResponse({ ok: true }));
@@ -203,68 +187,74 @@ function attemptSend(state) {
     // First reload the page to get a fresh limit state
     chrome.tabs.reload(tabId, { bypassCache: true }, () => {
       setTimeout(() => {
-        chrome.tabs.sendMessage(tabId, { type: "CHECK_LIMIT" }, resp => {
-          if (chrome.runtime.lastError || !resp) {
-            addLog("Content script not responding. Retrying...");
+        chrome.tabs.get(tabId, tab => {
+          if (chrome.runtime.lastError || !tab) {
+            addLog("Tab was closed. Will retry next cycle.");
             return;
           }
+          chrome.tabs.sendMessage(tabId, { type: "CHECK_LIMIT" }, resp => {
+            if (chrome.runtime.lastError || !resp) {
+              addLog("Content script not responding. Retrying...");
+              return;
+            }
 
-          if (resp.limited) {
-            addLog(`Still limited. Next check in 1 min...`);
-            return; // alarm will retry
-          }
+            if (resp.limited) {
+              addLog(`Still limited. Next check in 1 min...`);
+              return; // alarm will retry
+            }
 
-          if (resp.canType) {
-            // Limit has reset! Send the prompt
-            addLog("Limit has RESET! Sending prompt now...");
-            updateState(s => { s.status = "sending"; return s; });
+            if (resp.canType) {
+              // Limit has reset! Send the prompt
+              addLog("Limit has RESET! Sending prompt now...");
+              updateState(s => { s.status = "sending"; return s; });
 
-            chrome.tabs.sendMessage(tabId, {
-              type: "CHECK_AND_SEND",
-              prompt: state.prompt
-            }, result => {
-              if (chrome.runtime.lastError || !result) {
-                addLog("Send failed — will retry next cycle.");
-                updateState(s => { s.status = "checking"; return s; });
-                return;
-              }
+              chrome.tabs.sendMessage(tabId, {
+                type: "CHECK_AND_SEND",
+                prompt: state.prompt
+              }, result => {
+                if (chrome.runtime.lastError || !result) {
+                  addLog("Send failed — will retry next cycle.");
+                  updateState(s => { s.status = "checking"; return s; });
+                  return;
+                }
 
-              if (result.sent) {
-                addLog(`✓ Prompt sent successfully! (${result.method || "ok"})`);
-                updateState(s => { s.status = "done"; s.active = false; return s; });
-                chrome.alarms.clear(ALARM);
-                chrome.alarms.clear("ar-wait-end");
+                if (result.sent) {
+                  addLog(`✓ Prompt sent successfully! (${result.method || "ok"})`);
+                  updateState(s => { s.status = "done"; s.active = false; return s; });
+                  chrome.alarms.clear(ALARM);
+                  chrome.alarms.clear("ar-wait-end");
 
-                // Notification
-                chrome.notifications.create({
-                  type: "basic",
-                  iconUrl: "icons/icon48.png",
-                  title: "Claude AutoResume ✓",
-                  message: "Your prompt was sent! Claude is responding."
-                });
+                  // Notification
+                  chrome.notifications.create({
+                    type: "basic",
+                    iconUrl: "icons/icon48.png",
+                    title: "Claude AutoResume ✓",
+                    message: "Your prompt was sent! Claude is responding."
+                  });
 
-                // Sound notification
-                chrome.storage.local.get("soundEnabled", d => {
-                  if (d.soundEnabled !== false) {
-                    chrome.tabs.sendMessage(tabId, { type: "PLAY_NOTIFICATION_SOUND" },
-                      () => chrome.runtime.lastError);
-                  }
-                });
+                  // Sound notification
+                  chrome.storage.local.get("soundEnabled", d => {
+                    if (d.soundEnabled !== false) {
+                      chrome.tabs.sendMessage(tabId, { type: "PLAY_NOTIFICATION_SOUND" },
+                        () => chrome.runtime.lastError);
+                    }
+                  });
 
-                // Focus tab
-                chrome.tabs.update(tabId, { active: true });
+                  // Focus tab
+                  chrome.tabs.update(tabId, { active: true });
 
-              } else if (result.reason === "still_limited") {
-                addLog("Page says still limited. Retrying...");
-                updateState(s => { s.status = "checking"; return s; });
-              } else {
-                addLog(`Send failed: ${result.reason}. Retrying...`);
-                updateState(s => { s.status = "checking"; return s; });
-              }
-            });
-          } else {
-            addLog("Cannot type yet. Still waiting...");
-          }
+                } else if (result.reason === "still_limited") {
+                  addLog("Page says still limited. Retrying...");
+                  updateState(s => { s.status = "checking"; return s; });
+                } else {
+                  addLog(`Send failed: ${result.reason}. Retrying...`);
+                  updateState(s => { s.status = "checking"; return s; });
+                }
+              });
+            } else {
+              addLog("Cannot type yet. Still waiting...");
+            }
+          });
         });
       }, 5000); // wait 5s after reload for page to settle
     });
