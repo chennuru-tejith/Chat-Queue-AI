@@ -236,7 +236,7 @@ function getSendBtn() {
 
 // ── Auto-read reset timer ─────────────────────────────────────────────
 function parseAbsoluteResetTime(text) {
-  const m = text.match(/until\s+(\d+)(?::(\d+))?\s*(am|pm|a\.m\.|p\.m\.)/i);
+  const m = text.match(/(?:until|after|at)\s+(\d+)(?::(\d+))?\s*(am|pm|a\.m\.|p\.m\.)/i);
   if (m) {
     let hour = parseInt(m[1]);
     const min = m[2] ? parseInt(m[2]) : 0;
@@ -251,7 +251,7 @@ function parseAbsoluteResetTime(text) {
     const diffMins = Math.max(1, Math.ceil((resetDate - now) / 60000));
     return { mins: diffMins, display: `until ${m[1]}${m[2] ? ":" + m[2] : ""} ${ampm.toUpperCase()}` };
   }
-  const m24 = text.match(/until\s+(\d{1,2}):(\d{2})/i);
+  const m24 = text.match(/(?:until|after|at)\s+(\d{1,2}):(\d{2})/i);
   if (m24) {
     const hour = parseInt(m24[1]);
     const min = parseInt(m24[2]);
@@ -295,31 +295,20 @@ function parseResetTime(text) {
   const abs = parseAbsoluteResetTime(text);
   if (abs) return abs;
 
-  const patterns = [
-    /resets\s+in\s+(\d+)d\s+(\d+)h/i,
-    /resets\s+in\s+(\d+)h\s+(\d+)m/i,
-    /resets\s+in\s+(\d+)h/i,
-    /resets\s+in\s+(\d+)m/i,
-    /try\s+again\s+in\s+(\d+)h\s+(\d+)m/i,
-    /try\s+again\s+in\s+(\d+)m/i,
-  ];
-  for (const p of patterns) {
-    const m = text.match(p);
-    if (!m) continue;
+  const m = text.match(/(?:resets|try\s+again)\s+in\s+([^.!\n]+)/i);
+  if (m) {
+    const timeStr = m[1].toLowerCase();
+    const dayMatch = timeStr.match(/(\d+)\s*(?:d|day|days)/);
+    const hourMatch = timeStr.match(/(\d+)\s*(?:h|hour|hours|hr|hrs)/);
+    const minMatch = timeStr.match(/(\d+)\s*(?:m|minute|minutes|min|mins)/);
+
     let mins = 0;
-    const src = p.source;
-    if (src.includes("\\d+)d")) {
-      mins = parseInt(m[1]) * 24 * 60 + parseInt(m[2] || 0) * 60;
-    } else if (src.includes("\\d+)h\\s+(\\d+)m")) {
-      mins = parseInt(m[1]) * 60 + parseInt(m[2] || 0);
-    } else if (src.includes("\\d+)h")) {
-      mins = parseInt(m[1]) * 60;
-    } else {
-      mins = parseInt(m[1]);
-    }
+    if (dayMatch) mins += parseInt(dayMatch[1]) * 24 * 60;
+    if (hourMatch) mins += parseInt(hourMatch[1]) * 60;
+    if (minMatch) mins += parseInt(minMatch[1]);
+
     if (mins > 0) {
-      const raw = m[0].replace(/^(resets|try again)\s+in\s+/i, "").trim();
-      return { mins, display: raw };
+      return { mins, display: m[1].trim() };
     }
   }
   return null;
