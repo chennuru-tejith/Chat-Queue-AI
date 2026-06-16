@@ -274,6 +274,7 @@ function parseAbsoluteResetTime(text) {
 function parseResetTimeFromIso(isoString) {
   try {
     const resetTime = new Date(isoString);
+    if (isNaN(resetTime.getTime())) return null;
     const now = new Date();
     const diffMs = resetTime - now;
     if (diffMs <= 0) return null;
