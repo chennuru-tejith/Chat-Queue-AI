@@ -91,6 +91,11 @@ try {
       });
       return;
     }
+    if (msg.type === "SCRAPE_CONVERSATION") {
+      const msgs = scrapeConversation();
+      sendResponse({ messages: msgs, count: msgs.length });
+      return;
+    }
   });
 } catch {}
 
@@ -441,6 +446,135 @@ function playNotificationChime() {
   } catch {}
 }
 
+// ── Conversation Scraping & Export ─────────────────────────────────────
+function scrapeConversation() {
+  const messages = [];
+  try {
+    // Strategy 1: Find turn containers with data-testid
+    const humanTurns = document.querySelectorAll('[data-testid="human-turn"], [data-testid*="user-message"]');
+    const assistantTurns = document.querySelectorAll('[data-testid="ai-turn"], [data-testid*="assistant-message"]');
+    if (humanTurns.length > 0 || assistantTurns.length > 0) {
+      const all = [...document.querySelectorAll('[data-testid="human-turn"], [data-testid="ai-turn"], [data-testid*="user-message"], [data-testid*="assistant-message"]')];
+      for (const el of all) {
+        const tid = el.getAttribute('data-testid') || '';
+        const role = (tid.includes('human') || tid.includes('user')) ? 'human' : 'assistant';
+        const text = extractCleanText(el);
+        if (text) messages.push({ role, text });
+      }
+      if (messages.length > 0) return messages;
+    }
+
+    // Strategy 2: Look for conversation thread container and alternate children
+    const threadSelectors = [
+      '[class*="conversation"]', '[class*="thread"]', '[class*="chat-messages"]',
+      '[role="log"]', '[role="main"] > div > div'
+    ];
+    for (const sel of threadSelectors) {
+      const container = document.querySelector(sel);
+      if (!container) continue;
+      const children = Array.from(container.children).filter(c => {
+        const r = c.getBoundingClientRect();
+        return r.height > 20 && c.textContent.trim().length > 5;
+      });
+      if (children.length >= 2) {
+        for (let i = 0; i < children.length; i++) {
+          const text = extractCleanText(children[i]);
+          if (!text) continue;
+          messages.push({ role: i % 2 === 0 ? 'human' : 'assistant', text });
+        }
+        if (messages.length >= 2) return messages;
+        messages.length = 0;
+      }
+    }
+
+    // Strategy 3: Heuristic — find all substantial text blocks below header
+    const mainArea = document.querySelector('main') || document.querySelector('[role="main"]') || document.body;
+    const blocks = Array.from(mainArea.querySelectorAll('div, article, section')).filter(el => {
+      const r = el.getBoundingClientRect();
+      if (r.top < 80 || r.height < 30) return false;
+      if (el.closest('#ar-panel') || el.closest('#ar-page-usage-bar')) return false;
+      const text = el.innerText?.trim() || '';
+      if (text.length < 10) return false;
+      // Only leaf-ish blocks (not too many children with text)
+      const childDivs = el.querySelectorAll(':scope > div');
+      return childDivs.length < 5;
+    });
+
+    // Group blocks by vertical position to detect turn boundaries
+    let lastRole = 'assistant'; // First real message is usually human
+    for (const block of blocks) {
+      const text = extractCleanText(block);
+      if (!text || text.length < 10) continue;
+      // Simple heuristic: check if it contains typical AI response markers
+      const looksLikeAssistant = /```|\*\*|^(Here|I |Let me|Sure|Of course|The |This |To |You can)/m.test(text);
+      const role = looksLikeAssistant ? 'assistant' : 'human';
+      // Avoid consecutive same roles — alternate if needed
+      if (messages.length > 0 && messages[messages.length - 1].role === role) {
+        messages[messages.length - 1].text += '\n\n' + text;
+      } else {
+        messages.push({ role, text });
+      }
+    }
+  } catch (err) {
+    console.error('AutoResume: scrape error', err);
+  }
+  return messages;
+}
+
+function extractCleanText(el) {
+  if (!el) return '';
+  // Clone to avoid modifying the live DOM
+  const clone = el.cloneNode(true);
+  // Remove buttons, SVGs, and UI chrome
+  clone.querySelectorAll('button, svg, [class*="copy"], [class*="toolbar"], [class*="action"]').forEach(e => e.remove());
+  let text = clone.innerText || clone.textContent || '';
+  // Normalize whitespace
+  text = text.replace(/\t/g, '  ').replace(/\n{3,}/g, '\n\n').trim();
+  return text;
+}
+
+const EXPORT_TEMPLATES = {
+  chatgpt: {
+    name: 'ChatGPT',
+    color: '#10a37f',
+    icon: '🟢',
+    wrap: (conv) => `I'm continuing a conversation from Claude AI. Here is the full conversation history so you have complete context:\n\n${conv}\n\nPlease continue from where the last response ended. Maintain the same context, coding style, and approach. Pick up the next task naturally.`
+  },
+  gemini: {
+    name: 'Gemini',
+    color: '#4285f4',
+    icon: '🔵',
+    wrap: (conv) => `I need to continue work from a previous session on Claude AI. Below is the complete conversation for context:\n\n${conv}\n\nPlease pick up from the last response and continue the work seamlessly. Keep the same approach and style.`
+  },
+  claude: {
+    name: 'Claude',
+    color: '#d97706',
+    icon: '🟠',
+    wrap: (conv) => `Here is a conversation from a previous Claude session that I need to continue:\n\n${conv}\n\nPlease continue from where we left off, maintaining the same approach and context.`
+  },
+  deepseek: {
+    name: 'DeepSeek',
+    color: '#6366f1',
+    icon: '🟣',
+    wrap: (conv) => `I'm transferring context from a Claude AI conversation. Here is the full discussion for you to continue from:\n\n${conv}\n\nPlease continue the work from where the last response ended. Maintain the same style and approach.`
+  },
+  custom: {
+    name: 'Raw',
+    color: '#8b8ba0',
+    icon: '📄',
+    wrap: (conv) => conv
+  }
+};
+
+function formatForExport(messages, targetAI) {
+  if (!messages || messages.length === 0) return '(No messages found in this conversation)';
+  const conv = messages.map(m => {
+    const label = m.role === 'human' ? 'Human' : 'Assistant';
+    return `**${label}:**\n${m.text}`;
+  }).join('\n\n---\n\n');
+  const template = EXPORT_TEMPLATES[targetAI] || EXPORT_TEMPLATES.custom;
+  return template.wrap(conv);
+}
 
 
 // ── Auto-Save Draft ───────────────────────────────────────────────────
@@ -1070,6 +1204,76 @@ function injectStyles() {
       background: linear-gradient(90deg, #d946ef, #06b6d4);
       box-shadow: 0 0 8px rgba(217, 70, 239, 0.3);
     }
+ 
+    /* Export tab */
+    .ar-export-chips {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;
+    }
+    .ar-ai-chip {
+      padding: 5px 12px; border-radius: 100px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03); color: #8b8ba0;
+      font-size: 11px; font-weight: 500; cursor: pointer;
+      transition: all 0.2s; font-family: inherit;
+      display: inline-flex; align-items: center; gap: 5px;
+      user-select: none;
+    }
+    .ar-ai-chip:hover {
+      background: rgba(255,255,255,0.06); color: #ffffff;
+      transform: translateY(-1px);
+    }
+    .ar-ai-chip.selected {
+      background: rgba(217, 70, 239, 0.12);
+      border-color: #d946ef; color: #ffffff;
+      box-shadow: 0 0 8px rgba(217, 70, 239, 0.2);
+    }
+    .ar-export-preview {
+      width: 100%; height: 140px; resize: none;
+      background: rgba(8, 7, 12, 0.5); border: 1px solid rgba(255,255,255,0.05);
+      border-radius: 10px; padding: 10px; color: #9ca3af;
+      font-family: monospace; font-size: 10.5px; line-height: 1.65;
+      box-sizing: border-box; outline: none;
+      box-shadow: inset 0 2px 8px rgba(0,0,0,0.3);
+    }
+    .ar-export-preview:focus {
+      border-color: rgba(217, 70, 239, 0.3);
+    }
+    .ar-export-stats {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 10px; color: #8b8ba0; margin-top: 6px;
+      font-family: monospace;
+    }
+    .ar-export-stats .es-val {
+      color: #d946ef; font-weight: 600;
+    }
+    .ar-export-stats .es-warn {
+      color: #f59e0b; font-weight: 600;
+    }
+    .ar-export-btns {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px;
+    }
+    .ar-btn-export {
+      padding: 9px; border: none; border-radius: 9px;
+      background: linear-gradient(135deg, #d946ef, #8b5cf6);
+      color: #fff; font-family: inherit; font-size: 12px; font-weight: 600;
+      cursor: pointer; letter-spacing: 0.2px;
+      box-shadow: 0 3px 12px rgba(217,70,239,0.25);
+      transition: all 0.2s;
+    }
+    .ar-btn-export:hover { opacity: 0.92; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(217,70,239,0.4); }
+    .ar-btn-export:active { transform: translateY(1px) scale(0.99); }
+    .ar-btn-download {
+      padding: 9px; border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 9px; background: rgba(255,255,255,0.03);
+      color: #8b8ba0; font-family: inherit; font-size: 12px; font-weight: 500;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .ar-btn-download:hover { background: rgba(255,255,255,0.06); color: #ffffff; border-color: rgba(255,255,255,0.15); }
+    .ar-export-empty {
+      text-align: center; padding: 24px 16px; color: #5a5a6e;
+      font-size: 12px; line-height: 1.8;
+    }
+    .ar-export-empty .ee-icon { font-size: 28px; margin-bottom: 8px; }
   `;
   document.head.appendChild(el);
 }
@@ -1280,6 +1484,7 @@ function openPanel() {
       <div class="ar-tab active" data-tab="setup">Setup</div>
       <div class="ar-tab" data-tab="status">Status</div>
       <div class="ar-tab" data-tab="log">Log</div>
+      <div class="ar-tab" data-tab="export">Export</div>
     </div>
 
     <!-- SETUP TAB -->
@@ -1384,6 +1589,33 @@ function openPanel() {
     <div class="ar-tab-body" id="ar-t-log">
       <div class="ar-log" id="ar-log">No log entries yet.</div>
     </div>
+
+    <!-- EXPORT TAB -->
+    <div class="ar-tab-body" id="ar-t-export">
+      <div>
+        <label class="ar-lbl">Target AI</label>
+        <div class="ar-export-chips" id="ar-export-chips">
+          <button class="ar-ai-chip selected" data-ai="chatgpt">🟢 ChatGPT</button>
+          <button class="ar-ai-chip" data-ai="gemini">🔵 Gemini</button>
+          <button class="ar-ai-chip" data-ai="claude">🟠 Claude</button>
+          <button class="ar-ai-chip" data-ai="deepseek">🟣 DeepSeek</button>
+          <button class="ar-ai-chip" data-ai="custom">📄 Raw</button>
+        </div>
+      </div>
+      <div>
+        <label class="ar-lbl">Preview</label>
+        <textarea class="ar-export-preview" id="ar-export-preview" readonly placeholder="Click a target AI above, then scrape the conversation..."></textarea>
+        <div class="ar-export-stats">
+          <span>Messages: <span class="es-val" id="ar-ex-msg-count">0</span></span>
+          <span>Tokens: <span class="es-val" id="ar-ex-tok-count">0</span></span>
+          <span id="ar-ex-warn"></span>
+        </div>
+      </div>
+      <div class="ar-export-btns">
+        <button class="ar-btn-export" id="ar-export-copy">📋 Copy Context</button>
+        <button class="ar-btn-download" id="ar-export-download">📥 Download .txt</button>
+      </div>
+    </div>
   `;
 
   document.body.appendChild(p);
@@ -1397,6 +1629,7 @@ function openPanel() {
       p.querySelector(`#ar-t-${tab.dataset.tab}`).classList.add("active");
       if (tab.dataset.tab === "log") refreshLog();
       if (tab.dataset.tab === "status") refreshStatus();
+      if (tab.dataset.tab === "export") refreshExport();
     };
   });
 
@@ -1483,6 +1716,96 @@ function openPanel() {
       safeSet({ soundEnabled: soundToggle.checked });
       safeSend({ type: "SET_SOUND_PREF", data: { enabled: soundToggle.checked } });
       if (soundToggle.checked) playNotificationChime();
+    };
+  }
+
+  // ── Export tab handlers
+  let currentExportAI = 'chatgpt';
+  let lastExportText = '';
+
+  function refreshExport() {
+    const msgs = scrapeConversation();
+    const formatted = formatForExport(msgs, currentExportAI);
+    lastExportText = formatted;
+    const preview = p.querySelector('#ar-export-preview');
+    const msgCount = p.querySelector('#ar-ex-msg-count');
+    const tokCount = p.querySelector('#ar-ex-tok-count');
+    const warn = p.querySelector('#ar-ex-warn');
+    if (preview) preview.value = formatted;
+    if (msgCount) msgCount.textContent = msgs.length;
+    const tokens = estimateTokens(formatted);
+    if (tokCount) tokCount.textContent = tokens.toLocaleString();
+    if (warn) {
+      if (tokens > 100000) {
+        warn.innerHTML = '<span class="es-warn">⚠ Very large</span>';
+      } else if (tokens > 30000) {
+        warn.innerHTML = '<span class="es-warn">⚠ Large context</span>';
+      } else {
+        warn.textContent = '';
+      }
+    }
+  }
+
+  // AI chip selection
+  p.querySelectorAll('.ar-ai-chip').forEach(chip => {
+    chip.onclick = () => {
+      p.querySelectorAll('.ar-ai-chip').forEach(c => c.classList.remove('selected'));
+      chip.classList.add('selected');
+      currentExportAI = chip.dataset.ai;
+      refreshExport();
+    };
+  });
+
+  // Copy button
+  const copyBtn = p.querySelector('#ar-export-copy');
+  if (copyBtn) {
+    copyBtn.onclick = async () => {
+      refreshExport();
+      if (!lastExportText || lastExportText.includes('No messages found')) {
+        showToast('⚠ No messages to export');
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(lastExportText);
+        const aiName = EXPORT_TEMPLATES[currentExportAI]?.name || currentExportAI;
+        showToast(`✓ Copied for ${aiName}!`);
+        copyBtn.textContent = '✓ Copied!';
+        setTimeout(() => { copyBtn.textContent = '📋 Copy Context'; }, 2000);
+      } catch {
+        // Fallback
+        const ta = document.createElement('textarea');
+        ta.value = lastExportText;
+        ta.style.cssText = 'position:fixed;left:-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+        showToast('✓ Copied to clipboard!');
+      }
+    };
+  }
+
+  // Download button
+  const dlBtn = p.querySelector('#ar-export-download');
+  if (dlBtn) {
+    dlBtn.onclick = () => {
+      refreshExport();
+      if (!lastExportText || lastExportText.includes('No messages found')) {
+        showToast('⚠ No messages to export');
+        return;
+      }
+      const blob = new Blob([lastExportText], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const aiName = EXPORT_TEMPLATES[currentExportAI]?.name || 'export';
+      const chatId = location.pathname.split('/').pop()?.slice(0, 8) || 'chat';
+      a.download = `claude-${chatId}-for-${aiName.toLowerCase()}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showToast('✓ Downloaded!');
     };
   }
 
