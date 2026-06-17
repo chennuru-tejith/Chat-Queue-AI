@@ -116,21 +116,27 @@ function checkImmediately() {
     const s = d.resumeState;
     if (!s?.active) return;
 
-    findOrOpenTab(s.chatUrl, tabId => {
+    findOrOpenTab(s.chatUrl, (tabId, wasCreated) => {
       if (!tabId) { addLog("Could not find/open Claude tab"); return; }
 
-      chrome.tabs.sendMessage(tabId, { type: "CHECK_LIMIT" }, resp => {
-        if (chrome.runtime.lastError || !resp) return;
+      ensureTabReady(tabId, ready => {
+        if (!ready) { addLog("Claude tab load timed out"); return; }
 
-        if (resp.limited) {
-          chrome.tabs.sendMessage(tabId, { type: "GET_RESET_INFO" }, ri => {
-            const mins = (ri && ri.mins) ? ri.mins : 0;
-            onLimitDetected(mins);
+        // Give page 2 seconds to run content scripts if newly created
+        setTimeout(() => {
+          chrome.tabs.sendMessage(tabId, { type: "CHECK_LIMIT" }, resp => {
+            if (chrome.runtime.lastError || !resp) return;
+
+            if (resp.limited) {
+              chrome.tabs.sendMessage(tabId, { type: "GET_RESET_INFO" }, ri => {
+                const mins = (ri && ri.mins) ? ri.mins : 0;
+                onLimitDetected(mins);
+              });
+            } else if (resp.canType) {
+              attemptSend(s);
+            }
           });
-        } else if (resp.canType) {
-          // If we can type (whether we are checking or monitoring), send it immediately!
-          attemptSend(s);
-        }
+        }, wasCreated ? 2500 : 500);
       });
     });
   });
@@ -161,12 +167,10 @@ function onLimitDetected(detectedMins) {
   });
 }
 
-
 // ── Attempt to send ───────────────────────────────────────────────────
 function attemptSend(state) {
   const attempt = (state.attempts || 0) + 1;
 
-  // Check MAX_ATTEMPTS FIRST to avoid race with async send below
   if (attempt >= MAX_ATTEMPTS) {
     addLog(`✗ Gave up after ${MAX_ATTEMPTS} attempts.`);
     updateState(s => { s.active = false; s.status = "failed"; return s; });
@@ -178,86 +182,97 @@ function attemptSend(state) {
   updateState(s => { s.attempts = attempt; return s; });
   addLog(`Check #${attempt} — testing if limit has reset...`);
 
-  findOrOpenTab(state.chatUrl, tabId => {
+  findOrOpenTab(state.chatUrl, (tabId, wasCreated) => {
     if (!tabId) {
       addLog("Could not reach Claude tab. Will retry next cycle.");
       return;
     }
 
-    // First reload the page to get a fresh limit state
-    chrome.tabs.reload(tabId, { bypassCache: true }, () => {
-      setTimeout(() => {
-        chrome.tabs.get(tabId, tab => {
-          if (chrome.runtime.lastError || !tab) {
-            addLog("Tab was closed. Will retry next cycle.");
-            return;
-          }
-          chrome.tabs.sendMessage(tabId, { type: "CHECK_LIMIT" }, resp => {
-            if (chrome.runtime.lastError || !resp) {
-              addLog("Content script not responding. Retrying...");
+    const proceed = () => {
+      ensureTabReady(tabId, ready => {
+        if (!ready) {
+          addLog("Tab was closed or not ready. Will retry next cycle.");
+          return;
+        }
+
+        // Wait 3.5s for page scripts initialization and DOM hydration
+        setTimeout(() => {
+          chrome.tabs.get(tabId, tab => {
+            if (chrome.runtime.lastError || !tab) {
+              addLog("Tab was closed. Will retry next cycle.");
               return;
             }
+            chrome.tabs.sendMessage(tabId, { type: "CHECK_LIMIT" }, resp => {
+              if (chrome.runtime.lastError || !resp) {
+                addLog("Content script not responding. Retrying...");
+                return;
+              }
 
-            if (resp.limited) {
-              addLog(`Still limited. Next check in 1 min...`);
-              return; // alarm will retry
-            }
+              if (resp.limited) {
+                addLog(`Still limited. Next check in 1 min...`);
+                return; // alarm will retry
+              }
 
-            if (resp.canType) {
-              // Limit has reset! Send the prompt
-              addLog("Limit has RESET! Sending prompt now...");
-              updateState(s => { s.status = "sending"; return s; });
+              if (resp.canType) {
+                addLog("Limit has RESET! Sending prompt now...");
+                updateState(s => { s.status = "sending"; return s; });
 
-              chrome.tabs.sendMessage(tabId, {
-                type: "CHECK_AND_SEND",
-                prompt: state.prompt
-              }, result => {
-                if (chrome.runtime.lastError || !result) {
-                  addLog("Send failed — will retry next cycle.");
-                  updateState(s => { s.status = "checking"; return s; });
-                  return;
-                }
+                chrome.tabs.sendMessage(tabId, {
+                  type: "CHECK_AND_SEND",
+                  prompt: state.prompt
+                }, result => {
+                  if (chrome.runtime.lastError || !result) {
+                    addLog("Send failed — will retry next cycle.");
+                    updateState(s => { s.status = "checking"; return s; });
+                    return;
+                  }
 
-                if (result.sent) {
-                  addLog(`✓ Prompt sent successfully! (${result.method || "ok"})`);
-                  updateState(s => { s.status = "done"; s.active = false; return s; });
-                  chrome.alarms.clear(ALARM);
-                  chrome.alarms.clear("ar-wait-end");
+                  if (result.sent) {
+                    addLog(`✓ Prompt sent successfully! (${result.method || "ok"})`);
+                    updateState(s => { s.status = "done"; s.active = false; return s; });
+                    chrome.alarms.clear(ALARM);
+                    chrome.alarms.clear("ar-wait-end");
 
-                  // Notification
-                  chrome.notifications.create({
-                    type: "basic",
-                    iconUrl: "icons/icon48.png",
-                    title: "Claude AutoResume ✓",
-                    message: "Your prompt was sent! Claude is responding."
-                  });
+                    chrome.notifications.create({
+                      type: "basic",
+                      iconUrl: "icons/icon48.png",
+                      title: "Claude AutoResume ✓",
+                      message: "Your prompt was sent! Claude is responding."
+                    });
 
-                  // Sound notification
-                  chrome.storage.local.get("soundEnabled", d => {
-                    if (d.soundEnabled !== false) {
-                      chrome.tabs.sendMessage(tabId, { type: "PLAY_NOTIFICATION_SOUND" },
-                        () => chrome.runtime.lastError);
-                    }
-                  });
+                    chrome.storage.local.get("soundEnabled", d => {
+                      if (d.soundEnabled !== false) {
+                        chrome.tabs.sendMessage(tabId, { type: "PLAY_NOTIFICATION_SOUND" },
+                          () => chrome.runtime.lastError);
+                      }
+                    });
 
-                  // Focus tab
-                  chrome.tabs.update(tabId, { active: true });
+                    chrome.tabs.update(tabId, { active: true });
 
-                } else if (result.reason === "still_limited") {
-                  addLog("Page says still limited. Retrying...");
-                  updateState(s => { s.status = "checking"; return s; });
-                } else {
-                  addLog(`Send failed: ${result.reason}. Retrying...`);
-                  updateState(s => { s.status = "checking"; return s; });
-                }
-              });
-            } else {
-              addLog("Cannot type yet. Still waiting...");
-            }
+                  } else if (result.reason === "still_limited") {
+                    addLog("Page says still limited. Retrying...");
+                    updateState(s => { s.status = "checking"; return s; });
+                  } else {
+                    addLog(`Send failed: ${result.reason}. Retrying...`);
+                    updateState(s => { s.status = "checking"; return s; });
+                  }
+                });
+              } else {
+                addLog("Cannot type yet. Still waiting...");
+              }
+            });
           });
-        });
-      }, 5000); // wait 5s after reload for page to settle
-    });
+        }, wasCreated ? 3500 : 1500); // wait longer if tab was just opened
+      });
+    };
+
+    if (wasCreated) {
+      proceed();
+    } else {
+      chrome.tabs.reload(tabId, { bypassCache: true }, () => {
+        proceed();
+      });
+    }
   });
 }
 
@@ -266,12 +281,45 @@ function findOrOpenTab(chatUrl, callback) {
   chrome.tabs.query({ url: "https://claude.ai/*" }, tabs => {
     // Prefer exact chat URL
     const exact = tabs.find(t => t.url === chatUrl ||
-      t.url.includes(chatUrl.split("/").pop()));
-    if (exact) { callback(exact.id); return; }
+      (t.url && t.url.includes(chatUrl.split("/").pop())));
+    if (exact) { callback(exact.id, false); return; }
     // Any claude tab
-    if (tabs[0]) { callback(tabs[0].id); return; }
+    if (tabs[0]) { callback(tabs[0].id, false); return; }
     // Open new tab
-    chrome.tabs.create({ url: chatUrl, active: false }, t => callback(t.id));
+    chrome.tabs.create({ url: chatUrl, active: false }, t => callback(t.id, true));
+  });
+}
+
+// ── Ensure tab is fully loaded ────────────────────────────────────────
+function ensureTabReady(tabId, callback) {
+  chrome.tabs.get(tabId, tab => {
+    if (chrome.runtime.lastError || !tab) {
+      callback(false);
+      return;
+    }
+    if (tab.status === "complete") {
+      callback(true);
+    } else {
+      let resolved = false;
+      const listener = (tid, changeInfo) => {
+        if (tid === tabId && changeInfo.status === "complete") {
+          chrome.tabs.onUpdated.removeListener(listener);
+          if (!resolved) {
+            resolved = true;
+            callback(true);
+          }
+        }
+      };
+      chrome.tabs.onUpdated.addListener(listener);
+      // Timeout after 15 seconds to prevent memory leaks
+      setTimeout(() => {
+        chrome.tabs.onUpdated.removeListener(listener);
+        if (!resolved) {
+          resolved = true;
+          callback(false);
+        }
+      }, 15000);
+    }
   });
 }
 
