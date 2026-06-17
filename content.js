@@ -38,7 +38,6 @@ function selfDestruct() {
   try { document.getElementById("ar-btn")?.remove(); } catch {}
   try { document.getElementById("ar-panel")?.remove(); } catch {}
   try { document.getElementById("ar-styles")?.remove(); } catch {}
-  try { document.getElementById("ar-input-counter")?.remove(); } catch {}
   try { document.getElementById("ar-page-usage-bar")?.remove(); } catch {}
 }
 
@@ -1035,29 +1034,7 @@ function injectStyles() {
       color: #d946ef;
       font-weight: 600;
     }
-    .ar-input-counter {
-      position: absolute;
-      bottom: 12px;
-      left: 16px;
-      font-size: 10px;
-      font-weight: 600;
-      color: rgba(255, 255, 255, 0.45);
-      background: rgba(16, 16, 20, 0.85);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      padding: 3px 8px;
-      border-radius: 6px;
-      pointer-events: none;
-      z-index: 9;
-      font-family: monospace;
-      backdrop-filter: blur(4px);
-      transition: all 0.2s ease;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
-    }
-    .ar-input-counter.active {
-      color: #d946ef;
-      border-color: rgba(217, 70, 239, 0.25);
-      background: rgba(217, 70, 239, 0.08);
-    }
+
  
     /* Prompt Templates */
     .ar-templates {
@@ -2082,40 +2059,7 @@ function escH(s) {
   return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
 
-// ── Active Input Token Counter ────────────────────────────────────────
-function updateInputTokenCounter() {
-  const input = getInput();
-  if (!input) {
-    document.getElementById("ar-input-counter")?.remove();
-    return;
-  }
-  const text = input.innerText || "";
-  const cleanText = text.trim();
-  if (!cleanText) {
-    document.getElementById("ar-input-counter")?.remove();
-    return;
-  }
-  
-  let counter = document.getElementById("ar-input-counter");
-  if (!counter) {
-    counter = document.createElement("div");
-    counter.id = "ar-input-counter";
-    counter.className = "ar-input-counter";
-    const container = input.parentElement;
-    if (container) {
-      container.style.position = container.style.position || "relative";
-      container.appendChild(counter);
-    }
-  }
-  
-  const tokens = estimateTokens(text);
-  counter.textContent = `${tokens} token${tokens === 1 ? "" : "s"}`;
-  if (tokens > 0) {
-    counter.classList.add("active");
-  } else {
-    counter.classList.remove("active");
-  }
-}
+
 
 function getUsageBarAnchor() {
   const input = getInput();
@@ -2236,16 +2180,7 @@ const mutObs = new MutationObserver(() => {
     updateUsageBarOnPage();
   }, 900);
 
-  // Attach input listener to Claude's input box
-  const input = getInput();
-  if (input && !input.dataset.arListenerAdded) {
-    input.dataset.arListenerAdded = "true";
-    input.addEventListener("input", updateInputTokenCounter);
-    input.addEventListener("keyup", updateInputTokenCounter);
-    updateInputTokenCounter();
-  } else if (!input) {
-    document.getElementById("ar-input-counter")?.remove();
-  }
+
 });
 try { mutObs.observe(document.body, { childList: true, subtree: true }); } catch {}
 
