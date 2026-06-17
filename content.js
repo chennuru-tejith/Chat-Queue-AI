@@ -1066,33 +1066,7 @@ function injectStyles() {
     }
     .ar-tpl-save:hover { background: rgba(217, 70, 239, 0.06); color: #e879f9; border-color: #d946ef; }
  
-    /* Settings Row (sound toggle, shortcuts) */
-    .ar-settings-row {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 6px 0;
-    }
-    .ar-settings-label {
-      font-size: 11px; color: #8b8ba0; display: flex; align-items: center; gap: 6px;
-    }
-    .ar-toggle {
-      position: relative; width: 32px; height: 18px; appearance: none;
-      background: rgba(255, 255, 255, 0.08); border-radius: 9px; cursor: pointer;
-      transition: background 0.2s; border: none; outline: none;
-    }
-    .ar-toggle:checked { background: #d946ef; }
-    .ar-toggle::after {
-      content: ''; position: absolute; top: 2px; left: 2px;
-      width: 14px; height: 14px; border-radius: 50%;
-      background: #fff; transition: transform 0.2s;
-    }
-    .ar-toggle:checked::after { transform: translateX(14px); }
- 
-    /* Keyboard shortcut hint */
-    .ar-shortcut {
-      font-size: 9px; color: #8b8ba0; font-family: monospace;
-      padding: 1px 4px; border: 1px solid rgba(255, 255, 255, 0.06);
-      border-radius: 3px; background: rgba(255, 255, 255, 0.02);
-    }
+
  
     /* Force hide she-llac/claude-counter elements to prevent overlaps */
     [class*="cc-"],
@@ -1506,15 +1480,6 @@ function openPanel() {
         </div>
       </div>
       <div class="ar-div"></div>
-      <div class="ar-settings-row">
-        <span class="ar-settings-label">🔔 Sound notification</span>
-        <input type="checkbox" class="ar-toggle" id="ar-sound-toggle" checked />
-      </div>
-      <div class="ar-settings-row">
-        <span class="ar-settings-label">⌨ Shortcuts</span>
-        <span><span class="ar-shortcut">Alt+Shift+R</span> panel · <span class="ar-shortcut">Alt+Shift+S</span> start/stop</span>
-      </div>
-      <div class="ar-div"></div>
       <button class="ar-btn-primary" id="ar-start">▶&nbsp; Start AutoResume</button>
       <button class="ar-btn-danger"  id="ar-stop" style="display:none">■&nbsp; Stop</button>
     </div>
@@ -1688,16 +1653,7 @@ function openPanel() {
     };
   }
 
-  // ── Sound toggle
-  const soundToggle = p.querySelector("#ar-sound-toggle");
-  if (soundToggle) {
-    safeGet("soundEnabled", d => { soundToggle.checked = d?.soundEnabled !== false; });
-    soundToggle.onchange = () => {
-      safeSet({ soundEnabled: soundToggle.checked });
-      safeSend({ type: "SET_SOUND_PREF", data: { enabled: soundToggle.checked } });
-      if (soundToggle.checked) playNotificationChime();
-    };
-  }
+
 
   // ── Export tab handlers
   let currentExportAI = 'chatgpt';
