@@ -35,6 +35,7 @@ function selfDestruct() {
   try { clearInterval(pollInterval); } catch {}
   try { clearInterval(btnCheckInterval); } catch {}
   try { clearInterval(usageFetchInterval); } catch {}
+  try { clearInterval(fastCheckInterval); } catch {}
   try { document.getElementById("ar-btn")?.remove(); } catch {}
   try { document.getElementById("ar-panel")?.remove(); } catch {}
   try { document.getElementById("ar-styles")?.remove(); } catch {}
@@ -57,6 +58,7 @@ try {
     }
     if (msg.type === "STATE_UPDATED") {
       renderUI(msg.state);
+      startFastPolling(msg.state);
       return;
     }
     if (msg.type === "GET_RESET_INFO") {
@@ -2061,6 +2063,50 @@ function escH(s) {
 
 
 
+let fastCheckInterval = null;
+
+function startFastPolling(state) {
+  if (fastCheckInterval) clearInterval(fastCheckInterval);
+  if (!state || !state.active || state.status === "done" || state.status === "failed") return;
+
+  fastCheckInterval = setInterval(() => {
+    if (!isCtxValid()) {
+      clearInterval(fastCheckInterval);
+      return;
+    }
+    
+    safeGet("resumeState", d => {
+      const s = d.resumeState;
+      if (!s || !s.active || s.status === "done" || s.status === "failed") {
+        clearInterval(fastCheckInterval);
+        return;
+      }
+      
+      if (s.status === "checking" || s.status === "monitoring" || s.status === "waiting") {
+        if (canSend()) {
+          clearInterval(fastCheckInterval);
+          executeLocalSend(s);
+        }
+      }
+    });
+  }, 800);
+}
+
+function executeLocalSend(state) {
+  safeSend({ type: "LOCAL_SEND_START" });
+  
+  doSend(state.prompt).then(result => {
+    if (result && result.sent) {
+      safeSend({ type: "LOCAL_SEND_SUCCESS", method: result.method });
+    } else {
+      safeSend({ type: "LOCAL_SEND_FAILED", reason: result ? result.reason : "unknown" });
+      setTimeout(() => {
+        safeGet("resumeState", d => startFastPolling(d?.resumeState));
+      }, 5000);
+    }
+  });
+}
+
 function getUsageBarAnchor() {
   const input = getInput();
   if (!input) return null;
@@ -2218,7 +2264,12 @@ function boot() {
   if (shouldShowBtn()) {
     injectBtn();
   }
-  safeGet("resumeState", d => { if (d?.resumeState?.active) updateBtn(d.resumeState); });
+  safeGet("resumeState", d => {
+    if (d?.resumeState?.active) {
+      updateBtn(d.resumeState);
+      startFastPolling(d.resumeState);
+    }
+  });
 }
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
 else boot();

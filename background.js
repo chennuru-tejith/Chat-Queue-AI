@@ -25,6 +25,35 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // ── Local fast instant-send integration ─────────────────────────────────
+  if (msg.type === "LOCAL_SEND_START") {
+    updateState(s => { s.status = "sending"; return s; }, "In-page instant-send triggered...");
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (msg.type === "LOCAL_SEND_SUCCESS") {
+    updateState(s => { s.status = "done"; s.active = false; return s; },
+      `✓ Prompt sent successfully via in-page instant checker! (${msg.method || "ok"})`);
+    chrome.alarms.clear(ALARM);
+    chrome.alarms.clear("ar-wait-end");
+    if (fastBgTimeout) clearTimeout(fastBgTimeout);
+
+    chrome.notifications.create({
+      type: "basic",
+      iconUrl: "icons/icon48.png",
+      title: "Claude AutoResume ✓",
+      message: "Your prompt was sent! Claude is responding."
+    });
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (msg.type === "LOCAL_SEND_FAILED") {
+    updateState(s => { s.status = "checking"; return s; },
+      `Instant-send failed: ${msg.reason || "unknown"}. Re-entering checks...`);
+    sendResponse({ ok: true });
+    return true;
+  }
+
   return true;
 });
 
@@ -62,6 +91,7 @@ function startResume(data) {
 function stopResume() {
   chrome.alarms.clear(ALARM);
   chrome.alarms.clear("ar-wait-end");
+  if (fastBgTimeout) clearTimeout(fastBgTimeout);
   updateState(s => {
     s.active = false;
     s.status = "stopped";
@@ -209,8 +239,9 @@ function attemptSend(state) {
               }
 
               if (resp.limited) {
-                addLog(`Still limited. Next check in 1 min...`);
-                return; // alarm will retry
+                addLog(`Still limited. Retrying...`);
+                scheduleFastBackgroundCheck(10000);
+                return;
               }
 
               if (resp.canType) {
@@ -439,3 +470,17 @@ chrome.commands.onCommand.addListener(command => {
     }
   });
 });
+
+// ── Fast background check loop helper ──────────────────────────────────
+let fastBgTimeout = null;
+function scheduleFastBackgroundCheck(ms) {
+  if (fastBgTimeout) clearTimeout(fastBgTimeout);
+  fastBgTimeout = setTimeout(() => {
+    chrome.storage.local.get("resumeState", d => {
+      const s = d.resumeState;
+      if (s && s.active && s.status === "checking") {
+        attemptSend(s);
+      }
+    });
+  }, ms);
+}
