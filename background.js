@@ -38,6 +38,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     chrome.alarms.clear("ar-wait-end");
     if (fastBgTimeout) clearTimeout(fastBgTimeout);
 
+    // Bring tab and window to front
+    if (sender.tab && sender.tab.id) {
+      chrome.tabs.update(sender.tab.id, { active: true }, () => {
+        if (sender.tab.windowId) {
+          chrome.windows.update(sender.tab.windowId, { focused: true });
+        }
+      });
+    }
+
     chrome.notifications.create({
       type: "basic",
       iconUrl: "icons/icon48.png",
@@ -107,7 +116,15 @@ chrome.alarms.onAlarm.addListener(alarm => {
       const s = d.resumeState;
       if (!s?.active || s.status !== "waiting") return;
       updateState(st => { st.status = "checking"; return st; },
-        "Wait complete. Now checking every minute...");
+        "Wait complete. Waking up tab and starting checks...");
+      
+      // Wake up tab by focusing it
+      findOrOpenTab(s.chatUrl, (tabId) => {
+        if (tabId) {
+          chrome.tabs.update(tabId, { active: true });
+        }
+      });
+
       // Switch alarm back to 1 min for checking
       chrome.alarms.clear(ALARM, () => {
         chrome.alarms.create(ALARM, { periodInMinutes: 1 });
@@ -130,7 +147,14 @@ chrome.alarms.onAlarm.addListener(alarm => {
       if (rem <= 0) {
         // Time is up — start checking
         updateState(st => { st.status = "checking"; return st; },
-          `Wait complete. Starting checks...`);
+          `Wait complete. Waking up tab and starting checks...`);
+        
+        // Wake up tab by focusing it
+        findOrOpenTab(s.chatUrl, (tabId) => {
+          if (tabId) {
+            chrome.tabs.update(tabId, { active: true });
+          }
+        });
       } else {
         addLog(`Waiting... ${Math.ceil(rem)} min remaining`);
       }
@@ -245,6 +269,15 @@ function attemptSend(state) {
               }
 
               if (resp.canType) {
+                // Focus tab and window to wake it up
+                chrome.tabs.update(tabId, { active: true }, () => {
+                  chrome.tabs.get(tabId, tab => {
+                    if (!chrome.runtime.lastError && tab && tab.windowId) {
+                      chrome.windows.update(tab.windowId, { focused: true });
+                    }
+                  });
+                });
+
                 addLog("Limit has RESET! Sending prompt now...");
                 updateState(s => { s.status = "sending"; return s; });
 
