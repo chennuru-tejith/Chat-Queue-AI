@@ -149,7 +149,7 @@ async function fetchClaudeUsage() {
     lastUsageFetchTime = now;
     return info;
   } catch (err) {
-    console.error("AutoResume usage fetch error:", err);
+    console.warn("AutoResume usage fetch error:", err);
     return null;
   }
 }
@@ -518,7 +518,7 @@ function scrapeConversation() {
       }
     }
   } catch (err) {
-    console.error('AutoResume: scrape error', err);
+    console.warn('AutoResume: scrape error', err);
   }
   return messages;
 }
