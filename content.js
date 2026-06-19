@@ -1295,21 +1295,24 @@ function injectStyles() {
     /* Sleek Native Usage progress bar below composer */
     .ar-page-usage-bar {
       width: 100%;
-      margin-top: 10px;
-      margin-bottom: 6px;
+      box-sizing: border-box;
+      padding: 10px 16px 12px 16px;
+      border-top: 1px solid var(--border-secondary, rgba(128, 128, 128, 0.08));
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       user-select: none;
+      background: transparent;
+      margin-top: 4px;
     }
     .ar-pub-row {
       display: flex;
-      gap: 16px;
+      gap: 20px;
       width: 100%;
     }
     .ar-pub-col {
       flex: 1;
       display: flex;
       flex-direction: column;
-      gap: 5px;
+      gap: 6px;
       min-width: 0;
     }
     .ar-pub-meta {
@@ -1317,56 +1320,55 @@ function injectStyles() {
       align-items: center;
       font-size: 11px;
       line-height: 1;
+      width: 100%;
     }
     .ar-pub-label {
-      color: #8b8ba0;
-      font-weight: 550;
-      margin-right: 4px;
+      color: var(--text-secondary, #6b7280);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
     }
     .ar-pub-pct {
+      font-size: 11px;
       font-weight: 700;
-      color: #ffffff;
-    }
-    .light .ar-pub-pct, [class*="light"] .ar-pub-pct {
-      color: #1a1a1e;
+      color: var(--text-primary, inherit);
+      margin-left: 6px;
+      padding: 2px 6px;
+      background: var(--bg-tertiary, rgba(128, 128, 128, 0.08));
+      border-radius: 4px;
+      line-height: 1;
     }
     .ar-pub-reset {
-      color: #8b8ba0;
+      color: var(--text-tertiary, #9ca3af);
       font-size: 10px;
-      margin-left: 6px;
+      margin-left: auto;
       font-family: monospace;
+      font-weight: 500;
     }
     .ar-pub-progress-bg {
-      height: 5px;
-      background: rgba(255, 255, 255, 0.08);
+      height: 6px;
+      background: var(--bg-tertiary, rgba(128, 128, 128, 0.12));
       border-radius: 100px;
       overflow: hidden;
       width: 100%;
     }
-    .light .ar-pub-progress-bg, [class*="light"] .ar-pub-progress-bg {
-      background: rgba(0, 0, 0, 0.06);
-    }
     .ar-pub-progress-fill {
       height: 100%;
       border-radius: 100px;
-      transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s;
+      transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s;
       width: 0%;
     }
     .ar-pub-fill-green {
       background: linear-gradient(90deg, #10b981, #34d399);
-      box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
     }
     .ar-pub-fill-yellow {
       background: linear-gradient(90deg, #f59e0b, #fbbf24);
-      box-shadow: 0 0 8px rgba(245, 158, 11, 0.3);
     }
     .ar-pub-fill-red {
       background: linear-gradient(90deg, #ef4444, #f87171);
-      box-shadow: 0 0 8px rgba(239, 68, 68, 0.3);
     }
     .ar-pub-fill-blue {
-      background: linear-gradient(90deg, #d946ef, #06b6d4);
-      box-shadow: 0 0 8px rgba(217, 70, 239, 0.3);
+      background: linear-gradient(90deg, #6366f1, #a855f7);
     }
  
     /* Export tab */
