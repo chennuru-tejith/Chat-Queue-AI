@@ -560,7 +560,10 @@
   </div>
 
   <div class="field">
-    <label>Resume Prompt</label>
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <label style="margin-bottom: 0;">Resume Prompt</label>
+      <button class="btn-ghost" id="btnSyncComposer" title="Sync with active AI chat input" style="font-size: 11px; padding: 2px 8px; border-radius: 100px; cursor: pointer; color: var(--accent);">🔄 Sync AI Input</button>
+    </div>
     <div class="template-chips" id="templateChips">
       <!-- Loaded dynamically in popup.js -->
     </div>

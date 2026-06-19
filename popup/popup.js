@@ -416,6 +416,44 @@ function renderTemplates() {
   });
 }
 
+// ── Debounced Draft Auto-saving ──────────────────────────────────────
+let popupSaveTimeout = null;
+function saveDraft() {
+  clearTimeout(popupSaveTimeout);
+  popupSaveTimeout = setTimeout(() => {
+    const chatUrl = $("chatUrl").value;
+    const prompt = $("prompt").value;
+    const resetMinutes = parseInt($("resetMinutes").value) || 0;
+    const checkInterval = parseInt($("checkInterval").value) || 60;
+    chrome.storage.local.set({ savedSettings: { chatUrl, prompt, resetMinutes, checkInterval } });
+  }, 400);
+}
+
+// ── Sync Composer Text ───────────────────────────────────────────────
+function requestComposerText() {
+  chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+    const tab = tabs[0];
+    if (!tab || !tab.url || !ALLOWED_DOMAINS.some(d => tab.url.includes(d))) {
+      toast("Open a supported AI chat first");
+      return;
+    }
+    chrome.tabs.sendMessage(tab.id, { type: "GET_COMPOSER_TEXT" }, resp => {
+      if (chrome.runtime.lastError || !resp) {
+        toast("⚠ Could not read AI input box");
+        return;
+      }
+      if (resp.text) {
+        $("prompt").value = resp.text;
+        updatePromptStats();
+        saveDraft();
+        toast("✓ Synced from AI chat box");
+      } else {
+        toast("ℹ AI chat box is empty");
+      }
+    });
+  });
+}
+
 // ── Load saved settings on open ───────────────────────────────────────
 chrome.storage.local.get("savedSettings", ({ savedSettings }) => {
   if (savedSettings) {
@@ -424,6 +462,22 @@ chrome.storage.local.get("savedSettings", ({ savedSettings }) => {
     if (savedSettings.resetMinutes) $("resetMinutes").value = savedSettings.resetMinutes;
     if (savedSettings.checkInterval) $("checkInterval").value = savedSettings.checkInterval;
     updatePromptStats();
+  }
+  
+  // If the prompt is still empty, auto-detect composer text
+  if (!$("prompt").value.trim()) {
+    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+      const tab = tabs[0];
+      if (tab && tab.url && ALLOWED_DOMAINS.some(d => tab.url.includes(d))) {
+        chrome.tabs.sendMessage(tab.id, { type: "GET_COMPOSER_TEXT" }, resp => {
+          if (!chrome.runtime.lastError && resp && resp.text) {
+            $("prompt").value = resp.text;
+            updatePromptStats();
+            saveDraft();
+          }
+        });
+      }
+    });
   }
 });
 
@@ -449,8 +503,15 @@ updateUI();
 autoDetectTimer();
 renderTemplates();
 
-// ── Prompt textarea live token counter ────────────────────────────────
-$("prompt").addEventListener("input", updatePromptStats);
+// ── Event Listeners ───────────────────────────────────────────────────
+$("prompt").addEventListener("input", () => {
+  updatePromptStats();
+  saveDraft();
+});
+$("chatUrl").addEventListener("input", saveDraft);
+$("resetMinutes").addEventListener("input", saveDraft);
+$("checkInterval").addEventListener("input", saveDraft);
+$("btnSyncComposer").addEventListener("click", requestComposerText);
 
 // ── Save as template click handler ────────────────────────────────────
 $("btnSaveTemplate").addEventListener("click", () => {

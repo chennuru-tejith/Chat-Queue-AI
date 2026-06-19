@@ -74,6 +74,10 @@ try {
       togglePanel();
       return;
     }
+    if (msg.type === "GET_COMPOSER_TEXT") {
+      sendResponse({ text: getAIComposerText() });
+      return;
+    }
     if (msg.type === "TOGGLE_CHATQUEUE") {
       // If active, stop. Otherwise open panel for user to start.
       safeGet("resumeState", d => {
@@ -415,6 +419,15 @@ function canSend() {
 function getInput() {
   const config = getSiteConfig();
   return document.querySelector(config.inputSelector);
+}
+
+function getAIComposerText() {
+  const box = getInput();
+  if (!box) return "";
+  if (box.tagName === "TEXTAREA" || box.tagName === "INPUT") {
+    return box.value.trim();
+  }
+  return box.innerText.trim();
 }
 
 function getSendBtn() {
@@ -759,14 +772,19 @@ function formatForExport(messages, targetAI) {
 
 // ── Auto-Save Draft ───────────────────────────────────────────────────
 let draftSaveTimeout = null;
-function autoSaveDraft(prompt, url) {
+function autoSaveDraft(prompt, url, mins, interval) {
   clearTimeout(draftSaveTimeout);
   draftSaveTimeout = setTimeout(() => {
     safeGet("savedSettings", d => {
       const existing = d?.savedSettings || {};
-      safeSet({ savedSettings: { ...existing, prompt, chatUrl: url || existing.chatUrl || "" } });
+      safeSet({ savedSettings: {
+        chatUrl: url !== undefined ? url : (existing.chatUrl || ""),
+        prompt: prompt !== undefined ? prompt : (existing.prompt || ""),
+        resetMinutes: mins !== undefined ? mins : (existing.resetMinutes || 0),
+        checkInterval: interval !== undefined ? interval : (existing.checkInterval || 60)
+      }});
     });
-  }, 1200);
+  }, 500);
 }
 
 // ── Send prompt ───────────────────────────────────────────────────────
@@ -1657,7 +1675,10 @@ function openPanel() {
         <div class="ar-templates" id="ar-templates"></div>
       </div>
       <div>
-        <label class="ar-lbl">Resume Prompt</label>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <label class="ar-lbl" style="margin: 0;">Resume Prompt</label>
+          <button class="ar-grab" id="ar-sync-composer" title="Sync with active AI chat input" style="font-size: 10px; padding: 2px 8px; border-radius: 100px; cursor: pointer;">🔄 Sync AI Input</button>
+        </div>
         <textarea id="ar-prompt" class="ar-txa"
           placeholder="Continue from where we left off. Next step: ..."></textarea>
         <div class="ar-prompt-stats">
@@ -1792,13 +1813,42 @@ function openPanel() {
     tokSpan.textContent = `${tokens} token${tokens === 1 ? "" : "s"}`;
   }
 
+  const urlInp = p.querySelector("#ar-url");
+  const minsInp = p.querySelector("#ar-mins");
+  const intInp = p.querySelector("#ar-interval");
+
+  function handlePanelInput() {
+    const pr = promptTa ? promptTa.value : "";
+    const ur = urlInp ? urlInp.value : "";
+    const mi = minsInp ? parseInt(minsInp.value) || 0 : 0;
+    const it = intInp ? parseInt(intInp.value) || 60 : 60;
+    autoSaveDraft(pr, ur, mi, it);
+  }
+
   if (promptTa) {
     promptTa.addEventListener("input", () => {
       updatePromptStats();
-      // Auto-save draft
-      const url = p.querySelector("#ar-url")?.value || "";
-      autoSaveDraft(promptTa.value, url);
+      handlePanelInput();
     });
+  }
+  if (urlInp) urlInp.addEventListener("input", handlePanelInput);
+  if (minsInp) minsInp.addEventListener("input", handlePanelInput);
+  if (intInp) intInp.addEventListener("input", handlePanelInput);
+
+  // Sync composer button
+  const syncBtn = p.querySelector("#ar-sync-composer");
+  if (syncBtn && promptTa) {
+    syncBtn.onclick = () => {
+      const text = getAIComposerText();
+      if (text) {
+        promptTa.value = text;
+        updatePromptStats();
+        handlePanelInput();
+        showToast("✓ Synced from AI chat box");
+      } else {
+        showToast("ℹ AI chat box is empty");
+      }
+    };
   }
 
   // ── Prompt Templates
@@ -1955,6 +2005,7 @@ function openPanel() {
   p.querySelector("#ar-grab").onclick = () => {
     p.querySelector("#ar-url").value = location.href;
     showToast("✓ Current chat URL set");
+    handlePanelInput();
   };
 
   // ── Start
@@ -2009,8 +2060,21 @@ function openPanel() {
       if (!resetInfo && sv.resetMinutes) p.querySelector("#ar-mins").value = sv.resetMinutes;
     }
     const isChatPage = ["claude.ai", "chatgpt.com", "gemini.google.com", "deepseek.com"].some(d => location.href.includes(d));
-    if (!p.querySelector("#ar-url").value && isChatPage)
+    if (!p.querySelector("#ar-url").value && isChatPage) {
       p.querySelector("#ar-url").value = location.href;
+      handlePanelInput();
+    }
+    
+    // Auto-detect composer text if prompt is empty
+    if (promptTa && !promptTa.value.trim()) {
+      const text = getAIComposerText();
+      if (text) {
+        promptTa.value = text;
+        updatePromptStats();
+        handlePanelInput();
+      }
+    }
+    
     if (st) renderUI(st);
   });
 
