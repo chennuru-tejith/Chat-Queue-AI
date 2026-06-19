@@ -1,4 +1,4 @@
-// Claude AutoResume — Content Script v4
+// ChatQueue AI — Content Script v4
 // Complete rewrite: correct header injection, reliable limit detection, task overview
 
 let btnCheckInterval = null;
@@ -74,11 +74,11 @@ try {
       togglePanel();
       return;
     }
-    if (msg.type === "TOGGLE_AUTORESUME") {
+    if (msg.type === "TOGGLE_CHATQUEUE") {
       // If active, stop. Otherwise open panel for user to start.
       safeGet("resumeState", d => {
         if (d?.resumeState?.active) {
-          safeSend({ type: "STOP_RESUME" }, () => showToast("⏹ AutoResume stopped"));
+          safeSend({ type: "STOP_RESUME" }, () => showToast("⏹ ChatQueue AI stopped"));
         } else {
           if (!panelOpen) openPanel();
           showToast("Open panel — configure and click Start");
@@ -101,6 +101,219 @@ try {
 } catch {}
 
 let latestUsageData = null;
+
+const SITE_CONFIGS = {
+  claude: {
+    name: "Claude",
+    matches: (url) => url.includes("claude.ai"),
+    chatUrlPrefix: "https://claude.ai/chat/",
+    inputSelector: 'div[contenteditable="true"][data-placeholder], div.ProseMirror[contenteditable="true"], div[contenteditable="true"]',
+    sendBtnSelectors: [
+      'button[aria-label="Send message"]',
+      'button[aria-label="Send Message"]',
+      'button[data-testid="send-button"]',
+      'button[aria-label*="Send" i]'
+    ],
+    isLimitActive: () => {
+      if (latestUsageData?.session?.pct >= 100) return true;
+      const body = document.body.innerText.toLowerCase();
+      const limitPhrases = [
+        "usage limit reached", "you've reached your limit",
+        "try again in", "out of messages", "limit reached",
+        "over the limit", "you've hit your", "out of free messages",
+        "messages until"
+      ];
+      if (limitPhrases.some(p => body.includes(p))) return true;
+
+      const input = getInput();
+      if (input) {
+        const editable = input.getAttribute("contenteditable");
+        if (editable === "false" || editable === null) return true;
+        const style = window.getComputedStyle(input);
+        if (style.pointerEvents === "none") return true;
+      }
+      return false;
+    },
+    getResetInfo: () => {
+      const usage = getUsageInfo();
+      if (usage.session?.reset) {
+        return { mins: usage.session.reset.mins, display: usage.session.reset.display, source: "session" };
+      }
+      const body = document.body.innerText;
+      const bannerReset = parseResetTime(body);
+      if (bannerReset && bannerReset.mins < 24 * 60) {
+        return { mins: bannerReset.mins, display: bannerReset.display, source: "banner" };
+      }
+      return null;
+    },
+    scrapeTurns: () => {
+      const messages = [];
+      const humanTurns = document.querySelectorAll('[data-testid="human-turn"], [data-testid*="user-message"]');
+      const assistantTurns = document.querySelectorAll('[data-testid="ai-turn"], [data-testid*="assistant-message"]');
+      if (humanTurns.length > 0 || assistantTurns.length > 0) {
+        const all = [...document.querySelectorAll('[data-testid="human-turn"], [data-testid="ai-turn"], [data-testid*="user-message"], [data-testid*="assistant-message"]')];
+        for (const el of all) {
+          const tid = el.getAttribute('data-testid') || '';
+          const role = (tid.includes('human') || tid.includes('user')) ? 'human' : 'assistant';
+          const text = extractCleanText(el);
+          if (text) messages.push({ role, text });
+        }
+      }
+      return messages;
+    }
+  },
+  chatgpt: {
+    name: "ChatGPT",
+    matches: (url) => url.includes("chatgpt.com"),
+    chatUrlPrefix: "https://chatgpt.com/",
+    inputSelector: '#prompt-textarea, textarea[placeholder*="message" i], div[contenteditable="true"]',
+    sendBtnSelectors: [
+      'button[data-testid="send-button"]',
+      'button[data-testid="fruitjuice-send-button"]',
+      'button[aria-label="Send prompt" i]',
+      'button[aria-label*="Send" i]'
+    ],
+    isLimitActive: () => {
+      const body = document.body.innerText.toLowerCase();
+      const limitPhrases = [
+        "you've reached your gpt-4 limit",
+        "you've reached your limit",
+        "reached the limit for",
+        "reached the message limit",
+        "try again after",
+        "try again in",
+        "messages will reset"
+      ];
+      if (limitPhrases.some(p => body.includes(p))) return true;
+
+      const input = getInput();
+      if (input) {
+        if (input.disabled || input.getAttribute("disabled") !== null) return true;
+        const style = window.getComputedStyle(input);
+        if (style.pointerEvents === "none") return true;
+      }
+      return false;
+    },
+    getResetInfo: () => {
+      const body = document.body.innerText;
+      const bannerReset = parseResetTime(body);
+      if (bannerReset && bannerReset.mins < 24 * 60) {
+        return { mins: bannerReset.mins, display: bannerReset.display, source: "banner" };
+      }
+      return null;
+    },
+    scrapeTurns: () => {
+      const messages = [];
+      const turns = document.querySelectorAll('[data-message-author-role]');
+      if (turns.length > 0) {
+        for (const el of turns) {
+          const role = el.getAttribute('data-message-author-role') === 'user' ? 'human' : 'assistant';
+          const text = extractCleanText(el);
+          if (text) messages.push({ role, text });
+        }
+      }
+      return messages;
+    }
+  },
+  gemini: {
+    name: "Gemini",
+    matches: (url) => url.includes("gemini.google.com"),
+    chatUrlPrefix: "https://gemini.google.com/",
+    inputSelector: 'div.ql-editor[contenteditable="true"], div[contenteditable="true"][role="textbox"], textarea',
+    sendBtnSelectors: [
+      'button[aria-label="Send message"]',
+      'button[aria-label="Send Message"]',
+      'button[class*="send-button" i]',
+      'button[aria-label*="Send" i]'
+    ],
+    isLimitActive: () => {
+      const body = document.body.innerText.toLowerCase();
+      const limitPhrases = [
+        "reached the daily limit",
+        "limit reached",
+        "try again in",
+        "quota exceeded",
+        "resource exhausted"
+      ];
+      if (limitPhrases.some(p => body.includes(p))) return true;
+
+      const input = getInput();
+      if (input) {
+        const editable = input.getAttribute("contenteditable");
+        if (editable === "false" || editable === null) return true;
+      }
+      return false;
+    },
+    getResetInfo: () => {
+      const body = document.body.innerText;
+      const bannerReset = parseResetTime(body);
+      if (bannerReset && bannerReset.mins < 24 * 60) {
+        return { mins: bannerReset.mins, display: bannerReset.display, source: "banner" };
+      }
+      return null;
+    },
+    scrapeTurns: () => {
+      const messages = [];
+      const turns = document.querySelectorAll('user-query, message-content');
+      for (const el of turns) {
+        const role = el.tagName.toLowerCase() === 'user-query' ? 'human' : 'assistant';
+        const text = extractCleanText(el);
+        if (text) messages.push({ role, text });
+      }
+      return messages;
+    }
+  },
+  deepseek: {
+    name: "DeepSeek",
+    matches: (url) => url.includes("deepseek.com"),
+    chatUrlPrefix: "https://chat.deepseek.com/",
+    inputSelector: '#chat-input, textarea',
+    sendBtnSelectors: [
+      'div[class*="sendBtn"]',
+      'button[class*="sendBtn"]',
+      'button[aria-label*="Send" i]',
+      'button:has(svg)'
+    ],
+    isLimitActive: () => {
+      const body = document.body.innerText.toLowerCase();
+      const limitPhrases = [
+        "server capacity limited",
+        "busy",
+        "reached the limit",
+        "please try again later",
+        "try again in"
+      ];
+      if (limitPhrases.some(p => body.includes(p))) return true;
+
+      const input = getInput();
+      if (input) {
+        if (input.disabled || input.getAttribute("disabled") !== null) return true;
+      }
+      return false;
+    },
+    getResetInfo: () => {
+      const body = document.body.innerText;
+      const bannerReset = parseResetTime(body);
+      if (bannerReset && bannerReset.mins < 24 * 60) {
+        return { mins: bannerReset.mins, display: bannerReset.display, source: "banner" };
+      }
+      return null;
+    },
+    scrapeTurns: () => {
+      return [];
+    }
+  }
+};
+
+function getSiteConfig() {
+  const url = window.location.href;
+  for (const key in SITE_CONFIGS) {
+    if (SITE_CONFIGS[key].matches(url)) {
+      return SITE_CONFIGS[key];
+    }
+  }
+  return SITE_CONFIGS.claude;
+}
 
 function getOrgIdFromCookie() {
   try {
@@ -149,13 +362,15 @@ async function fetchClaudeUsage() {
     lastUsageFetchTime = now;
     return info;
   } catch (err) {
-    console.warn("AutoResume usage fetch error:", err);
+    console.warn("ChatQueue AI usage fetch error:", err);
     return null;
   }
 }
 
 async function runPeriodicUsageFetch() {
   if (!isCtxValid()) return;
+  const config = getSiteConfig();
+  if (config.name !== "Claude") return;
   const data = await fetchClaudeUsage();
   if (data) {
     latestUsageData = data;
@@ -171,71 +386,42 @@ async function runPeriodicUsageFetch() {
 // ── Limit & input detection ───────────────────────────────────────────
 function isLimitActive() {
   try {
-    if (latestUsageData?.session?.pct >= 100) return true;
-
-    const body = document.body.innerText.toLowerCase();
-
-    // Check for explicit limit phrases
-    const limitPhrases = [
-      "usage limit reached", "you've reached your limit",
-      "try again in", "out of messages", "limit reached",
-      "over the limit", "you've hit your", "out of free messages",
-      "messages until"
-    ];
-    if (limitPhrases.some(p => body.includes(p))) return true;
-
-    // Session bar shows 100% AND input is not editable = limited
-    const input = getInput();
-    if (input) {
-      const editable = input.getAttribute("contenteditable");
-      if (editable === "false" || editable === null) return true;
-      // Check if input is visually blocked
-      const style = window.getComputedStyle(input);
-      if (style.pointerEvents === "none") return true;
-    }
-
-    // Check for disabled send button with no text in box
-    const sendBtn = getSendBtn();
-    if (sendBtn && sendBtn.disabled && !getInput()?.innerText?.trim()) {
-      // Could mean limit — also check session bar
-      if (body.includes("session: 100%") || body.match(/session:\s*100%/)) return true;
-    }
-
+    const config = getSiteConfig();
+    return config.isLimitActive();
+  } catch {
     return false;
-  } catch { return false; }
+  }
 }
 
 function canSend() {
   try {
     const input = getInput();
     if (!input) return false;
-    const editable = input.getAttribute("contenteditable");
-    if (editable !== "true") return false;
+    if (input.tagName === "TEXTAREA" || input.tagName === "INPUT") {
+      if (input.disabled || input.getAttribute("disabled") !== null) return false;
+    } else {
+      const editable = input.getAttribute("contenteditable");
+      if (editable !== "true") return false;
+    }
     const style = window.getComputedStyle(input);
     if (style.pointerEvents === "none") return false;
     if (isLimitActive()) return false;
     return true;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 function getInput() {
-  return (
-    document.querySelector('div[contenteditable="true"][data-placeholder]') ||
-    document.querySelector("div.ProseMirror[contenteditable='true']") ||
-    document.querySelector('div[contenteditable="true"]')
-  );
+  const config = getSiteConfig();
+  return document.querySelector(config.inputSelector);
 }
 
 function getSendBtn() {
-  const sels = [
-    'button[aria-label="Send message"]',
-    'button[aria-label="Send Message"]',
-    'button[data-testid="send-button"]',
-    'button[aria-label*="Send" i]',
-  ];
-  for (const s of sels) {
-    const b = document.querySelector(s);
-    if (b) return b;
+  const config = getSiteConfig();
+  for (const sel of config.sendBtnSelectors) {
+    const btn = document.querySelector(sel);
+    if (btn) return btn;
   }
   return null;
 }
@@ -375,22 +561,8 @@ function getUsageInfo() {
 
 function getResetInfo() {
   try {
-    const usage = getUsageInfo();
-
-    // Prioritize session reset (the one that actually blocks you)
-    if (usage.session?.reset) {
-      return { mins: usage.session.reset.mins, display: usage.session.reset.display, source: "session" };
-    }
-
-    // Fall back to "try again in" text anywhere on page (limit banner)
-    const body = document.body.innerText;
-    const bannerReset = parseResetTime(body);
-    if (bannerReset && bannerReset.mins < 24 * 60) {
-      return { mins: bannerReset.mins, display: bannerReset.display, source: "banner" };
-    }
-
-    // Do NOT return the weekly reset — it's not useful for AutoResume
-    return null;
+    const config = getSiteConfig();
+    return config.getResetInfo();
   } catch {}
   return null;
 }
@@ -452,6 +624,12 @@ function playNotificationChime() {
 function scrapeConversation() {
   const messages = [];
   try {
+    const config = getSiteConfig();
+    if (typeof config.scrapeTurns === "function") {
+      const specific = config.scrapeTurns();
+      if (specific && specific.length > 0) return specific;
+    }
+
     // Strategy 1: Find turn containers with data-testid
     const humanTurns = document.querySelectorAll('[data-testid="human-turn"], [data-testid*="user-message"]');
     const assistantTurns = document.querySelectorAll('[data-testid="ai-turn"], [data-testid*="assistant-message"]');
@@ -518,7 +696,7 @@ function scrapeConversation() {
       }
     }
   } catch (err) {
-    console.warn('AutoResume: scrape error', err);
+    console.warn('ChatQueue AI: scrape error', err);
   }
   return messages;
 }
@@ -601,20 +779,34 @@ async function doSend(prompt) {
 
   box.focus();
   await wait(300);
-  document.execCommand("selectAll", false, null);
-  document.execCommand("delete", false, null);
-  await wait(200);
-  document.execCommand("insertText", false, prompt);
+
+  if (box.tagName === "TEXTAREA" || box.tagName === "INPUT") {
+    box.value = "";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    box.dispatchEvent(new Event("change", { bubbles: true }));
+    await wait(200);
+    box.value = prompt;
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    box.dispatchEvent(new Event("change", { bubbles: true }));
+  } else {
+    document.execCommand("selectAll", false, null);
+    document.execCommand("delete", false, null);
+    await wait(200);
+    document.execCommand("insertText", false, prompt);
+  }
   await wait(800);
 
   // Verify insertion
-  if (!(box.innerText || "").trim()) {
+  const finalVal = (box.tagName === "TEXTAREA" || box.tagName === "INPUT") ? box.value : box.innerText;
+  if (!finalVal || !finalVal.trim()) {
     const dt = new DataTransfer();
     dt.setData("text/plain", prompt);
     box.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true }));
     await wait(800);
   }
-  if (!(box.innerText || "").trim()) return { sent: false, reason: "insert_failed" };
+  
+  const verifiedVal = (box.tagName === "TEXTAREA" || box.tagName === "INPUT") ? box.value : box.innerText;
+  if (!verifiedVal || !verifiedVal.trim()) return { sent: false, reason: "insert_failed" };
 
   await wait(300);
 
@@ -1272,7 +1464,7 @@ function injectBtn() {
 
   const btn = document.createElement("button");
   btn.id    = "ar-btn";
-  btn.title = "AutoResume";
+  btn.title = "ChatQueue AI";
   btn.innerHTML = `
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -1409,14 +1601,23 @@ function openPanel() {
   const resetInfo = getResetInfo();
   // Position panel under the button
   const arBtn = document.getElementById("ar-btn");
+  const isFab = arBtn && arBtn.classList.contains("ar-fab");
   const btnRect = arBtn ? arBtn.getBoundingClientRect() : null;
-  const panelRight = btnRect ? (window.innerWidth - btnRect.right - 4) : 8;
-  const panelTop   = btnRect ? (btnRect.bottom + 6) : 48;
+  const activeConfig = getSiteConfig();
 
   const p = document.createElement("div");
   p.id = "ar-panel";
-  p.style.right = panelRight + "px";
-  p.style.top   = panelTop  + "px";
+  if (isFab) {
+    p.style.right = "24px";
+    p.style.bottom = "80px";
+    p.style.top = "auto";
+  } else {
+    const panelRight = btnRect ? (window.innerWidth - btnRect.right - 4) : 8;
+    const panelTop   = btnRect ? (btnRect.bottom + 6) : 48;
+    p.style.right = panelRight + "px";
+    p.style.top   = panelTop  + "px";
+    p.style.bottom = "auto";
+  }
   p.innerHTML = `
     <div class="ar-hd">
       <div class="ar-hd-l">
@@ -1427,7 +1628,7 @@ function openPanel() {
           </svg>
         </div>
         <div>
-          <div class="ar-ttl">AutoResume</div>
+          <div class="ar-ttl">ChatQueue AI</div>
           <div class="ar-sub">Auto-sends when your limit resets</div>
         </div>
       </div>
@@ -1444,10 +1645,10 @@ function openPanel() {
     <!-- SETUP TAB -->
     <div class="ar-tab-body active" id="ar-t-setup">
       <div>
-        <label class="ar-lbl">Claude Chat URL</label>
+        <label class="ar-lbl">${activeConfig.name} Chat URL</label>
         <div class="ar-url-r">
           <input id="ar-url" class="ar-inp" type="text"
-            placeholder="https://claude.ai/chat/..." />
+            placeholder="${activeConfig.chatUrlPrefix}..." />
           <button class="ar-grab" id="ar-grab">Use current</button>
         </div>
       </div>
@@ -1480,7 +1681,7 @@ function openPanel() {
         </div>
       </div>
       <div class="ar-div"></div>
-      <button class="ar-btn-primary" id="ar-start">▶&nbsp; Start AutoResume</button>
+      <button class="ar-btn-primary" id="ar-start">▶&nbsp; Start ChatQueue AI</button>
       <button class="ar-btn-danger"  id="ar-stop" style="display:none">■&nbsp; Stop</button>
     </div>
 
@@ -1527,7 +1728,7 @@ function openPanel() {
           <span class="ar-task-val muted" id="tk-attempts">0</span>
         </div>
       </div>
-      <button class="ar-btn-danger" id="ar-stop2" style="display:none">■&nbsp; Stop AutoResume</button>
+      <button class="ar-btn-danger" id="ar-stop2" style="display:none">■&nbsp; Stop ChatQueue AI</button>
     </div>
 
     <!-- LOG TAB -->
@@ -1736,7 +1937,8 @@ function openPanel() {
       a.href = url;
       const aiName = EXPORT_TEMPLATES[currentExportAI]?.name || 'export';
       const chatId = location.pathname.split('/').pop()?.slice(0, 8) || 'chat';
-      a.download = `claude-${chatId}-for-${aiName.toLowerCase()}.txt`;
+      const prefix = getSiteConfig().name.toLowerCase();
+      a.download = `${prefix}-${chatId}-for-${aiName.toLowerCase()}.txt`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -1762,14 +1964,24 @@ function openPanel() {
     const mins     = parseInt(p.querySelector("#ar-mins").value) || 0;
     const interval = parseInt(p.querySelector("#ar-interval").value) || 60;
 
-    if (!url.startsWith("https://claude.ai/chat/")) {
-      showToast("⚠ Enter a valid Claude chat URL"); return;
+    const allowed = ["claude.ai", "chatgpt.com", "gemini.google.com", "deepseek.com"];
+    const isValid = allowed.some(domain => {
+      try {
+        const parsed = new URL(url);
+        return parsed.hostname.includes(domain) && url.startsWith("https://");
+      } catch {
+        return false;
+      }
+    });
+
+    if (!isValid) {
+      showToast("⚠ Enter a valid AI chat URL"); return;
     }
     if (!prompt) { showToast("⚠ Enter a resume prompt"); return; }
 
     safeSet({ savedSettings: { chatUrl: url, prompt, resetMinutes: mins, checkInterval: interval } });
     safeSend({ type: "START_RESUME", data: { chatUrl: url, prompt, resetMinutes: mins, checkInterval: interval } }, () => {
-      showToast("✓ AutoResume started!");
+      showToast("✓ ChatQueue AI started!");
       refreshStatus();
       // Switch to status tab
       p.querySelector('[data-tab="status"]').click();
@@ -1796,7 +2008,8 @@ function openPanel() {
       if (sv.checkInterval) p.querySelector("#ar-interval").value = sv.checkInterval;
       if (!resetInfo && sv.resetMinutes) p.querySelector("#ar-mins").value = sv.resetMinutes;
     }
-    if (!p.querySelector("#ar-url").value && location.href.includes("/chat/"))
+    const isChatPage = ["claude.ai", "chatgpt.com", "gemini.google.com", "deepseek.com"].some(d => location.href.includes(d));
+    if (!p.querySelector("#ar-url").value && isChatPage)
       p.querySelector("#ar-url").value = location.href;
     if (st) renderUI(st);
   });
@@ -1913,7 +2126,7 @@ function updateStatusTab(state) {
     checking:   "Testing if the limit has cleared...",
     sending:    "Typing and sending your resume prompt",
     done:       "Prompt was sent successfully! Check your chat.",
-    stopped:    "AutoResume was stopped manually",
+    stopped:    "ChatQueue AI was stopped manually",
     failed:     "Something went wrong — check the Log tab",
   };
 
@@ -1986,7 +2199,7 @@ function updateStatusTab(state) {
     }
   }
 
-  // Session reset time (used for AutoResume countdown)
+  // Session reset time (used for ChatQueue AI countdown)
   const ri = getResetInfo();
   if (tk.time) {
     if (ri) {
@@ -2082,6 +2295,11 @@ function getUsageBarAnchor() {
 
 function updateUsageBarOnPage() {
   if (!isCtxValid()) return;
+  const config = getSiteConfig();
+  if (config.name !== "Claude") {
+    document.getElementById("ar-page-usage-bar")?.remove();
+    return;
+  }
   const anchor = getUsageBarAnchor();
   if (!anchor) {
     document.getElementById("ar-page-usage-bar")?.remove();

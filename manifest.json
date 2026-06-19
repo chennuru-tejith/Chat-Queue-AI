@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Claude AutoResume",
+  "name": "ChatQueue AI",
   "version": "1.0.0",
-  "description": "Automatically sends a prompt to your Claude chat when your usage limit resets.",
+  "description": "Automatically sends a prompt to your chat when your usage limit resets. Supports Claude, ChatGPT, Gemini, and DeepSeek.",
   "permissions": [
     "storage",
     "alarms",
@@ -10,14 +10,24 @@
     "notifications"
   ],
   "host_permissions": [
-    "https://claude.ai/*"
+    "https://claude.ai/*",
+    "https://chatgpt.com/*",
+    "https://gemini.google.com/*",
+    "https://chat.deepseek.com/*",
+    "https://*.deepseek.com/*"
   ],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["https://claude.ai/*"],
+      "matches": [
+        "https://claude.ai/*",
+        "https://chatgpt.com/*",
+        "https://gemini.google.com/*",
+        "https://chat.deepseek.com/*",
+        "https://*.deepseek.com/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }
@@ -38,11 +48,11 @@
   "commands": {
     "toggle-panel": {
       "suggested_key": { "default": "Alt+Shift+R" },
-      "description": "Toggle AutoResume panel"
+      "description": "Toggle ChatQueue AI panel"
     },
-    "toggle-autoresume": {
+    "toggle-chatqueue": {
       "suggested_key": { "default": "Alt+Shift+S" },
-      "description": "Start or stop AutoResume"
+      "description": "Start or stop ChatQueue AI"
     }
   }
 }

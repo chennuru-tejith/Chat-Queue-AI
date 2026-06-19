@@ -1,4 +1,4 @@
-// Claude AutoResume — Background Service Worker v5
+// ChatQueue AI — Background Service Worker v5
 
 const ALARM = "ar-monitor";
 const MAX_ATTEMPTS = 120;
@@ -50,8 +50,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     chrome.notifications.create({
       type: "basic",
       iconUrl: "icons/icon48.png",
-      title: "Claude AutoResume ✓",
-      message: "Your prompt was sent! Claude is responding."
+      title: "ChatQueue AI ✓",
+      message: "Your prompt was sent! The AI is responding."
     });
     sendResponse({ ok: true });
     return true;
@@ -68,7 +68,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // ── Start ─────────────────────────────────────────────────────────────
 function startResume(data) {
-  if (!data?.chatUrl?.startsWith("https://claude.ai/chat/")) return;
+  const allowed = ["claude.ai", "chatgpt.com", "gemini.google.com", "deepseek.com"];
+  const isValid = allowed.some(domain => {
+    try {
+      const parsed = new URL(data?.chatUrl);
+      return parsed.hostname.includes(domain) && data.chatUrl.startsWith("https://");
+    } catch {
+      return false;
+    }
+  });
+  if (!isValid) return;
 
   const state = {
     active: true,
@@ -80,7 +89,7 @@ function startResume(data) {
     startedAt: Date.now(),
     limitDetectedAt: null,
     attempts: 0,
-    log: [`[${ts()}] AutoResume started. Monitoring for usage limit...`]
+    log: [`[${ts()}] ChatQueue AI started. Monitoring for usage limit...`]
   };
 
   chrome.storage.local.set({ resumeState: state }, () => {
@@ -300,8 +309,8 @@ function attemptSend(state) {
                     chrome.notifications.create({
                       type: "basic",
                       iconUrl: "icons/icon48.png",
-                      title: "Claude AutoResume ✓",
-                      message: "Your prompt was sent! Claude is responding."
+                      title: "ChatQueue AI ✓",
+                      message: "Your prompt was sent! The AI is responding."
                     });
 
                     chrome.storage.local.get("soundEnabled", d => {
@@ -340,18 +349,26 @@ function attemptSend(state) {
   });
 }
 
-// ── Find or open Claude tab ───────────────────────────────────────────
+// ── Find or open AI tab ───────────────────────────────────────────────
 function findOrOpenTab(chatUrl, callback) {
-  chrome.tabs.query({ url: "https://claude.ai/*" }, tabs => {
-    // Prefer exact chat URL
-    const exact = tabs.find(t => t.url === chatUrl ||
-      (t.url && t.url.includes(chatUrl.split("/").pop())));
-    if (exact) { callback(exact.id, false); return; }
-    // Any claude tab
-    if (tabs[0]) { callback(tabs[0].id, false); return; }
-    // Open new tab
+  try {
+    const domain = new URL(chatUrl).hostname;
+    const baseDomain = domain.split('.').slice(-2).join('.');
+    const queryUrl = `*://*.${baseDomain}/*`;
+
+    chrome.tabs.query({ url: queryUrl }, tabs => {
+      // Prefer exact chat URL
+      const exact = tabs.find(t => t.url === chatUrl ||
+        (t.url && t.url.includes(chatUrl.split("/").pop())));
+      if (exact) { callback(exact.id, false); return; }
+      // Any tab in this domain
+      if (tabs[0]) { callback(tabs[0].id, false); return; }
+      // Open new tab
+      chrome.tabs.create({ url: chatUrl, active: false }, t => callback(t.id, true));
+    });
+  } catch (err) {
     chrome.tabs.create({ url: chatUrl, active: false }, t => callback(t.id, true));
-  });
+  }
 }
 
 // ── Ensure tab is fully loaded ────────────────────────────────────────
@@ -417,10 +434,18 @@ function addLog(msg) {
 
 function broadcast(state) {
   if (!state) return;
-  chrome.tabs.query({ url: "https://claude.ai/*" }, tabs => {
+  const allowedDomains = ["claude.ai", "chatgpt.com", "gemini.google.com", "deepseek.com"];
+  chrome.tabs.query({}, tabs => {
     for (const tab of tabs) {
-      chrome.tabs.sendMessage(tab.id, { type: "STATE_UPDATED", state },
-        () => chrome.runtime.lastError);
+      if (tab.url) {
+        try {
+          const parsed = new URL(tab.url);
+          if (allowedDomains.some(d => parsed.hostname.includes(d))) {
+            chrome.tabs.sendMessage(tab.id, { type: "STATE_UPDATED", state },
+              () => chrome.runtime.lastError);
+          }
+        } catch {}
+      }
     }
   });
 }
@@ -489,18 +514,23 @@ chrome.runtime.onInstalled.addListener(() => {
 
 // ── Keyboard shortcuts ─────────────────────────────────────────────────
 chrome.commands.onCommand.addListener(command => {
-  chrome.tabs.query({ url: "https://claude.ai/*", active: true, currentWindow: true }, tabs => {
+  chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
     const tab = tabs[0];
-    if (!tab) return;
+    if (!tab || !tab.url) return;
+    const allowedDomains = ["claude.ai", "chatgpt.com", "gemini.google.com", "deepseek.com"];
+    try {
+      const parsed = new URL(tab.url);
+      if (!allowedDomains.some(d => parsed.hostname.includes(d))) return;
 
-    if (command === "toggle-panel") {
-      chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_PANEL" },
-        () => chrome.runtime.lastError);
-    }
-    if (command === "toggle-autoresume") {
-      chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_AUTORESUME" },
-        () => chrome.runtime.lastError);
-    }
+      if (command === "toggle-panel") {
+        chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_PANEL" },
+          () => chrome.runtime.lastError);
+      }
+      if (command === "toggle-chatqueue") {
+        chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_CHATQUEUE" },
+          () => chrome.runtime.lastError);
+      }
+    } catch {}
   });
 });
 

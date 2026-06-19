@@ -1,4 +1,4 @@
-// Claude AutoResume — Popup Script
+// ChatQueue AI — Popup Script
 
 const $ = id => document.getElementById(id);
 
@@ -14,15 +14,32 @@ document.querySelectorAll(".tab").forEach(tab => {
   });
 });
 
+const ALLOWED_DOMAINS = ["claude.ai", "chatgpt.com", "gemini.google.com", "deepseek.com"];
+
+function getDomainName(url) {
+  try {
+    const hostname = new URL(url).hostname;
+    if (hostname.includes("claude.ai")) return "Claude";
+    if (hostname.includes("chatgpt.com")) return "ChatGPT";
+    if (hostname.includes("gemini.google.com")) return "Gemini";
+    if (hostname.includes("deepseek.com")) return "DeepSeek";
+  } catch {}
+  return "";
+}
+
 // ── Use current tab button ────────────────────────────────────────────
 $("btnCurrentTab").addEventListener("click", () => {
   chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
-    if (tabs[0] && tabs[0].url.includes("claude.ai")) {
-      $("chatUrl").value = tabs[0].url;
-      toast("✓ URL captured");
-    } else {
-      toast("Open a Claude chat first");
+    const tab = tabs[0];
+    if (tab && tab.url) {
+      const name = getDomainName(tab.url);
+      if (name) {
+        $("chatUrl").value = tab.url;
+        toast(`✓ ${name} URL captured`);
+        return;
+      }
     }
+    toast("Open a supported AI chat first");
   });
 });
 
@@ -33,8 +50,17 @@ $("btnStart").addEventListener("click", () => {
   const resetMinutes = parseInt($("resetMinutes").value) || 0;
   const checkInterval = parseInt($("checkInterval").value) || 60;
 
-  if (!chatUrl.startsWith("https://claude.ai/chat/")) {
-    toast("⚠ Enter a valid Claude chat URL"); return;
+  const isValid = ALLOWED_DOMAINS.some(domain => {
+    try {
+      const parsed = new URL(chatUrl);
+      return parsed.hostname.includes(domain) && chatUrl.startsWith("https://");
+    } catch {
+      return false;
+    }
+  });
+
+  if (!isValid) {
+    toast("⚠ Enter a valid AI chat URL"); return;
   }
   if (!prompt) {
     toast("⚠ Enter a resume prompt"); return;
@@ -47,7 +73,7 @@ $("btnStart").addEventListener("click", () => {
     type: "START_RESUME",
     data: { chatUrl, prompt, resetMinutes, checkInterval }
   }, () => {
-    toast("✓ AutoResume started!");
+    toast("✓ ChatQueue AI started!");
     updateUI();
     // Switch to status tab
     setTimeout(() => {
@@ -163,7 +189,7 @@ function renderStatus() {
         </div>
       </div>
 
-      ${state.active ? `<button class="btn-stop" id="btnStop2">■ Stop AutoResume</button>` : ""}
+      ${state.active ? `<button class="btn-stop" id="btnStop2">■ Stop ChatQueue AI</button>` : ""}
     `;
 
     // Re-attach stop button
@@ -174,17 +200,23 @@ function renderStatus() {
       });
     });
 
-    // Fetch live usage from the active Claude tab
+    // Fetch live usage from the active tab if it matches
     chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
       let tab = tabs && tabs[0];
-      if (tab && tab.url?.includes("claude.ai")) {
+      let hasUsage = false;
+      if (tab && tab.url && ALLOWED_DOMAINS.some(d => tab.url.includes(d))) {
         fetchUsage(tab.id);
-      } else {
-        // Fallback: search all Claude tabs
-        chrome.tabs.query({ url: "*://claude.ai/*" }, allTabs => {
-          const fallbackTab = allTabs && allTabs[0];
-          if (fallbackTab) fetchUsage(fallbackTab.id);
-        });
+        hasUsage = true;
+      }
+
+      if (!hasUsage && state.chatUrl) {
+        try {
+          const host = new URL(state.chatUrl).hostname;
+          chrome.tabs.query({ url: `*://${host}/*` }, allTabs => {
+            const fallbackTab = allTabs && allTabs[0];
+            if (fallbackTab) fetchUsage(fallbackTab.id);
+          });
+        } catch {}
       }
     });
 
@@ -399,7 +431,7 @@ chrome.storage.local.get("savedSettings", ({ savedSettings }) => {
 function autoDetectTimer() {
   chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
     const tab = tabs[0];
-    if (!tab || !tab.url?.includes("claude.ai")) return;
+    if (!tab || !tab.url || !ALLOWED_DOMAINS.some(d => tab.url.includes(d))) return;
     chrome.tabs.sendMessage(tab.id, { type: "GET_RESET_INFO" }, resp => {
       if (chrome.runtime.lastError || !resp) return;
       if (resp.mins) {
