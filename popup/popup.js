@@ -11,6 +11,7 @@ document.querySelectorAll(".tab").forEach(tab => {
     $(`tab-${tab.dataset.tab}`).classList.add("active");
     if (tab.dataset.tab === "status") renderStatus();
     if (tab.dataset.tab === "log") renderLog();
+    if (tab.dataset.tab === "settings") renderSettings();
   });
 });
 
@@ -35,6 +36,8 @@ $("btnCurrentTab").addEventListener("click", () => {
       const name = getDomainName(tab.url);
       if (name) {
         $("chatUrl").value = tab.url;
+        updatePlatformBadge();
+        saveDraft();
         toast(`✓ ${name} URL captured`);
         return;
       }
@@ -68,6 +71,16 @@ $("btnStart").addEventListener("click", () => {
 
   // Save settings for persistence
   chrome.storage.local.set({ savedSettings: { chatUrl, prompt, resetMinutes, checkInterval } });
+
+  // Add to prompt history
+  chrome.storage.local.get("promptHistory", d => {
+    let history = d.promptHistory || [];
+    const domain = getDomainName(chatUrl);
+    history = history.filter(h => h.prompt !== prompt);
+    history.unshift({ prompt, timestamp: Date.now(), domain });
+    if (history.length > 15) history.pop();
+    chrome.storage.local.set({ promptHistory: history });
+  });
 
   chrome.runtime.sendMessage({
     type: "START_RESUME",
@@ -454,18 +467,108 @@ function requestComposerText() {
   });
 }
 
+// ── Update active platform badge ──────────────────────────────────────
+function updatePlatformBadge() {
+  const url = $("chatUrl").value;
+  const name = getDomainName(url);
+  const badge = $("activePlatformBadge");
+  if (!badge) return;
+
+  if (name === "Claude") {
+    badge.textContent = "🟠 Claude";
+    badge.style.cssText = "font-weight: 600; padding: 2px 8px; border-radius: 4px; font-size: 9px; background: rgba(249, 115, 22, 0.1); border: 1px solid rgba(249, 115, 22, 0.35); color: #f97316; letter-spacing: 0.3px;";
+  } else if (name === "ChatGPT") {
+    badge.textContent = "🟢 ChatGPT";
+    badge.style.cssText = "font-weight: 600; padding: 2px 8px; border-radius: 4px; font-size: 9px; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.35); color: #10b981; letter-spacing: 0.3px;";
+  } else if (name === "Gemini") {
+    badge.textContent = "🔵 Gemini";
+    badge.style.cssText = "font-weight: 600; padding: 2px 8px; border-radius: 4px; font-size: 9px; background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.35); color: #3b82f6; letter-spacing: 0.3px;";
+  } else if (name === "DeepSeek") {
+    badge.textContent = "🟣 DeepSeek";
+    badge.style.cssText = "font-weight: 600; padding: 2px 8px; border-radius: 4px; font-size: 9px; background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.35); color: #8b5cf6; letter-spacing: 0.3px;";
+  } else {
+    badge.textContent = "None";
+    badge.style.cssText = "font-weight: 600; padding: 2px 8px; border-radius: 4px; font-size: 9px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border); color: var(--muted); letter-spacing: 0.3px;";
+  }
+}
+
+// ── Broadcaster for setting updates ──────────────────────────────────
+function updateSetting(key, val) {
+  chrome.storage.local.set({ [key]: val }, () => {
+    chrome.tabs.query({}, tabs => {
+      tabs.forEach(tab => {
+        if (tab.url && ALLOWED_DOMAINS.some(d => tab.url.includes(d))) {
+          chrome.tabs.sendMessage(tab.id, { type: "SETTING_CHANGED", key, val }, () => chrome.runtime.lastError);
+        }
+      });
+    });
+  });
+}
+
+// ── Render settings panel ─────────────────────────────────────────────
+function renderSettings() {
+  chrome.storage.local.get(["soundEnabled", "fabEnabled", "autoCaptureEnabled", "promptHistory"], d => {
+    $("chkSound").checked = d.soundEnabled !== false;
+    $("chkFab").checked = d.fabEnabled !== false;
+    $("chkAutoCapture").checked = d.autoCaptureEnabled !== false;
+
+    // Render history
+    const history = d.promptHistory || [];
+    const list = $("promptHistoryList");
+    if (history.length === 0) {
+      list.innerHTML = `
+        <div class="empty-state" style="padding: 10px; font-size: 11px;">
+          <div class="empty-text">No prompt history yet.</div>
+        </div>
+      `;
+      return;
+    }
+
+    list.innerHTML = history.map((item, idx) => {
+      const date = new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const brand = item.domain || "AI";
+      return `
+        <div class="history-item" data-idx="${idx}">
+          <div class="history-text" title="${escHtml(item.prompt)}">${escHtml(item.prompt)}</div>
+          <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
+            <span style="font-size: 8px; font-weight: 600; padding: 1px 4px; border-radius: 3px; background: rgba(255,255,255,0.06); border: 1px solid var(--border);">${brand}</span>
+            <span class="history-date">${date}</span>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    // Bind click listeners to history items
+    list.querySelectorAll(".history-item").forEach(item => {
+      item.onclick = () => {
+        const idx = parseInt(item.dataset.idx);
+        const selected = history[idx];
+        if (selected) {
+          $("prompt").value = selected.prompt;
+          updatePromptStats();
+          saveDraft();
+          toast("✓ Prompt loaded from history");
+          // Switch back to setup tab
+          document.querySelector('[data-tab="setup"]').click();
+        }
+      };
+    });
+  });
+}
+
 // ── Load saved settings on open ───────────────────────────────────────
-chrome.storage.local.get("savedSettings", ({ savedSettings }) => {
+chrome.storage.local.get(["savedSettings", "autoCaptureEnabled"], ({ savedSettings, autoCaptureEnabled }) => {
   if (savedSettings) {
     if (savedSettings.chatUrl)      $("chatUrl").value      = savedSettings.chatUrl;
     if (savedSettings.prompt)       $("prompt").value       = savedSettings.prompt;
     if (savedSettings.resetMinutes) $("resetMinutes").value = savedSettings.resetMinutes;
     if (savedSettings.checkInterval) $("checkInterval").value = savedSettings.checkInterval;
     updatePromptStats();
+    updatePlatformBadge();
   }
   
   // If the prompt is still empty, auto-detect composer text
-  if (!$("prompt").value.trim()) {
+  if (autoCaptureEnabled !== false && !$("prompt").value.trim()) {
     chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
       const tab = tabs[0];
       if (tab && tab.url && ALLOWED_DOMAINS.some(d => tab.url.includes(d))) {
@@ -508,10 +611,41 @@ $("prompt").addEventListener("input", () => {
   updatePromptStats();
   saveDraft();
 });
-$("chatUrl").addEventListener("input", saveDraft);
+$("chatUrl").addEventListener("input", () => {
+  updatePlatformBadge();
+  saveDraft();
+});
 $("resetMinutes").addEventListener("input", saveDraft);
 $("checkInterval").addEventListener("input", saveDraft);
 $("btnSyncComposer").addEventListener("click", requestComposerText);
+
+// Settings Toggles
+$("chkSound").addEventListener("change", () => {
+  updateSetting("soundEnabled", $("chkSound").checked);
+  toast("✓ Sound alerts " + ($("chkSound").checked ? "enabled" : "disabled"));
+});
+$("chkFab").addEventListener("change", () => {
+  updateSetting("fabEnabled", $("chkFab").checked);
+  toast("✓ Floating badge " + ($("chkFab").checked ? "enabled" : "disabled"));
+});
+$("chkAutoCapture").addEventListener("change", () => {
+  updateSetting("autoCaptureEnabled", $("chkAutoCapture").checked);
+  toast("✓ Auto-capture " + ($("chkAutoCapture").checked ? "enabled" : "disabled"));
+});
+$("btnClearHistory").addEventListener("click", () => {
+  chrome.storage.local.set({
+    promptHistory: [],
+    soundEnabled: true,
+    fabEnabled: true,
+    autoCaptureEnabled: true
+  }, () => {
+    updateSetting("soundEnabled", true);
+    updateSetting("fabEnabled", true);
+    updateSetting("autoCaptureEnabled", true);
+    renderSettings();
+    toast("🗑 History and settings cleared");
+  });
+});
 
 // ── Save as template click handler ────────────────────────────────────
 $("btnSaveTemplate").addEventListener("click", () => {
@@ -527,5 +661,6 @@ setInterval(() => {
   const activeTab = document.querySelector(".tab.active");
   if (activeTab?.dataset.tab === "status") renderStatus();
   if (activeTab?.dataset.tab === "log") renderLog();
+  if (activeTab?.dataset.tab === "settings") renderSettings();
   updateUI();
 }, 5000);

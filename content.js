@@ -4,6 +4,23 @@
 let btnCheckInterval = null;
 let usageFetchInterval = null;
 
+let fabEnabled = true;
+let autoCaptureEnabled = true;
+
+try {
+  chrome.storage.local.get(["fabEnabled", "autoCaptureEnabled"], d => {
+    if (d) {
+      if (d.fabEnabled === false) {
+        fabEnabled = false;
+        document.getElementById("ar-btn")?.remove();
+      }
+      if (d.autoCaptureEnabled === false) {
+        autoCaptureEnabled = false;
+      }
+    }
+  });
+} catch {}
+
 // ── Context guards ────────────────────────────────────────────────────
 function isCtxValid() {
   try { return !!(chrome?.runtime?.id); } catch { return false; }
@@ -99,6 +116,20 @@ try {
     if (msg.type === "SCRAPE_CONVERSATION") {
       const msgs = scrapeConversation();
       sendResponse({ messages: msgs, count: msgs.length });
+      return;
+    }
+    if (msg.type === "SETTING_CHANGED") {
+      if (msg.key === "fabEnabled") {
+        fabEnabled = msg.val;
+        if (!fabEnabled) {
+          document.getElementById("ar-btn")?.remove();
+        } else {
+          injectBtn();
+        }
+      }
+      if (msg.key === "autoCaptureEnabled") {
+        autoCaptureEnabled = msg.val;
+      }
       return;
     }
   });
@@ -1467,6 +1498,7 @@ function hasHeaderAnchor() {
 
 // ── Inject button into Claude header ─────────────────────────────────
 function shouldShowBtn() {
+  if (fabEnabled === false) return false;
   const url = window.location.href;
   return !url.includes("/login") && !url.includes("/signup");
 }
@@ -2067,8 +2099,8 @@ function openPanel() {
       handlePanelInput();
     }
     
-    // Auto-detect composer text if prompt is empty
-    if (promptTa && !promptTa.value.trim()) {
+    // Auto-detect composer text if prompt is empty and autoCaptureEnabled !== false
+    if (autoCaptureEnabled !== false && promptTa && !promptTa.value.trim()) {
       const text = getAIComposerText();
       if (text) {
         promptTa.value = text;

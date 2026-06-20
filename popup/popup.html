@@ -521,6 +521,83 @@
     color: var(--accent);
     font-weight: 600;
   }
+
+  /* Switch Toggle */
+  .switch {
+    position: relative;
+    display: inline-block;
+    width: 34px;
+    height: 20px;
+  }
+  .switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+  .slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(255, 255, 255, 0.08);
+    transition: .3s;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+  }
+  .slider:before {
+    position: absolute;
+    content: "";
+    height: 14px;
+    width: 14px;
+    left: 2px;
+    bottom: 2px;
+    background-color: var(--text);
+    transition: .3s;
+    border-radius: 50%;
+  }
+  input:checked + .slider {
+    background-color: var(--accent);
+    border-color: var(--accent);
+    box-shadow: 0 0 8px var(--accent-glow);
+  }
+  input:checked + .slider:before {
+    transform: translateX(14px);
+    background-color: #fff;
+  }
+
+  /* Prompt History Items */
+  .history-item {
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .history-item:hover {
+    background: var(--surface-hover);
+    border-color: var(--accent2);
+    transform: translateX(2px);
+  }
+  .history-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-right: 8px;
+    color: var(--text);
+  }
+  .history-date {
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+  }
 </style>
 </head>
 <body>
@@ -545,6 +622,7 @@
   <div class="tab active" data-tab="setup">Setup</div>
   <div class="tab" data-tab="status">Status</div>
   <div class="tab" data-tab="log">Log</div>
+  <div class="tab" data-tab="settings">Settings</div>
 </div>
 
 <!-- ── SETUP TAB ─────────────────────────────────────────────────── -->
@@ -556,7 +634,13 @@
       <input type="text" id="chatUrl" placeholder="https://..." />
       <button class="btn-ghost" id="btnCurrentTab">Use current tab</button>
     </div>
-    <div class="helper">Open your AI chat (Claude, ChatGPT, Gemini, DeepSeek), then click "Use current tab"</div>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 5px;">
+      <div class="helper" style="margin: 0;">Open your AI chat, then click "Use current tab"</div>
+      <div style="display: flex; align-items: center; gap: 4px; font-size: 10px;">
+        <span style="color: var(--muted);">Active:</span>
+        <span id="activePlatformBadge" style="font-weight: 600; padding: 1px 6px; border-radius: 4px; font-size: 9px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border); letter-spacing: 0.3px; color: var(--muted);">None</span>
+      </div>
+    </div>
   </div>
 
   <div class="field">
@@ -606,6 +690,59 @@
 <div class="panel" id="tab-log">
   <div class="log-box" id="logBox">
     <span class="log-line" style="color:var(--muted)">No log entries yet.</span>
+  </div>
+</div>
+
+<!-- ── SETTINGS TAB ──────────────────────────────────────────────── -->
+<div class="panel" id="tab-settings">
+  <div class="field">
+    <label>General Preferences</label>
+    
+    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: var(--surface); border-radius: var(--radius-sm); border: 1px solid var(--border); margin-bottom: 10px; backdrop-filter: blur(8px);">
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <span style="font-weight: 500; font-size: 12px;">Sound Alerts</span>
+        <span style="color: var(--muted); font-size: 10px;">Play chime on successful prompt send</span>
+      </div>
+      <label class="switch" style="margin: 0;">
+        <input type="checkbox" id="chkSound" checked />
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: var(--surface); border-radius: var(--radius-sm); border: 1px solid var(--border); margin-bottom: 10px; backdrop-filter: blur(8px);">
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <span style="font-weight: 500; font-size: 12px;">Floating Action Button</span>
+        <span style="color: var(--muted); font-size: 10px;">Show floating badges on AI chat pages</span>
+      </div>
+      <label class="switch" style="margin: 0;">
+        <input type="checkbox" id="chkFab" checked />
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: var(--surface); border-radius: var(--radius-sm); border: 1px solid var(--border); margin-bottom: 10px; backdrop-filter: blur(8px);">
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <span style="font-weight: 500; font-size: 12px;">Auto-Capture Input</span>
+        <span style="color: var(--muted); font-size: 10px;">Auto-pull draft from active AI chat composer</span>
+      </div>
+      <label class="switch" style="margin: 0;">
+        <input type="checkbox" id="chkAutoCapture" checked />
+        <span class="slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <div class="field" style="margin-top: 18px;">
+    <label>Prompt History</label>
+    <div id="promptHistoryList" style="max-height: 140px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 4px;">
+      <div class="empty-state" style="padding: 10px; font-size: 11px;">
+        <div class="empty-text">No prompt history yet.</div>
+      </div>
+    </div>
+  </div>
+  
+  <div style="margin-top: 12px;">
+    <button class="btn-ghost" id="btnClearHistory" style="width: 100%; text-align: center; padding: 8px; font-size: 11px;">🗑 Clear History & Settings</button>
   </div>
 </div>
 
