@@ -137,6 +137,61 @@ try {
 
 let latestUsageData = null;
 
+let cachedExcludedText = "";
+let lastCacheTime = 0;
+
+function getPageTextExcludingChat() {
+  const now = Date.now();
+  if (cachedExcludedText && (now - lastCacheTime < 500)) {
+    return cachedExcludedText;
+  }
+
+  const excludeSelector = [
+    '[data-testid="human-turn"]',
+    '[data-testid="ai-turn"]',
+    '[data-testid*="user-message"]',
+    '[data-testid*="assistant-message"]',
+    '[data-message-author-role]',
+    'user-query',
+    'message-content',
+    'article',
+    'pre',
+    'code',
+    '.chat-turn',
+    '#ar-panel',
+    '#ar-page-usage-bar',
+    '#ar-toast'
+  ].join(',');
+
+  let text = "";
+  function traverse(node) {
+    if (!node) return;
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      try {
+        if (node.matches(excludeSelector)) return;
+      } catch {}
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      text += node.nodeValue + " ";
+      return;
+    }
+    let child = node.firstChild;
+    while (child) {
+      traverse(child);
+      child = child.nextSibling;
+    }
+  }
+
+  try {
+    traverse(document.body);
+    cachedExcludedText = text.replace(/\s+/g, " ").trim();
+  } catch (err) {
+    cachedExcludedText = document.body?.innerText || "";
+  }
+  lastCacheTime = now;
+  return cachedExcludedText;
+}
+
 const SITE_CONFIGS = {
   claude: {
     name: "Claude",
@@ -151,7 +206,7 @@ const SITE_CONFIGS = {
     ],
     isLimitActive: () => {
       if (latestUsageData?.session?.pct >= 100) return true;
-      const body = document.body.innerText.toLowerCase();
+      const body = getPageTextExcludingChat().toLowerCase();
       const limitPhrases = [
         "usage limit reached", "you've reached your limit",
         "try again in", "out of messages", "limit reached",
@@ -174,7 +229,7 @@ const SITE_CONFIGS = {
       if (usage.session?.reset) {
         return { mins: usage.session.reset.mins, display: usage.session.reset.display, source: "session" };
       }
-      const body = document.body.innerText;
+      const body = getPageTextExcludingChat();
       const bannerReset = parseResetTime(body);
       if (bannerReset && bannerReset.mins < 24 * 60) {
         return { mins: bannerReset.mins, display: bannerReset.display, source: "banner" };
@@ -209,7 +264,7 @@ const SITE_CONFIGS = {
       'button[aria-label*="Send" i]'
     ],
     isLimitActive: () => {
-      const body = document.body.innerText.toLowerCase();
+      const body = getPageTextExcludingChat().toLowerCase();
       const limitPhrases = [
         "you've reached your gpt-4 limit",
         "you've reached your limit",
@@ -230,7 +285,7 @@ const SITE_CONFIGS = {
       return false;
     },
     getResetInfo: () => {
-      const body = document.body.innerText;
+      const body = getPageTextExcludingChat();
       const bannerReset = parseResetTime(body);
       if (bannerReset && bannerReset.mins < 24 * 60) {
         return { mins: bannerReset.mins, display: bannerReset.display, source: "banner" };
@@ -262,7 +317,7 @@ const SITE_CONFIGS = {
       'button[aria-label*="Send" i]'
     ],
     isLimitActive: () => {
-      const body = document.body.innerText.toLowerCase();
+      const body = getPageTextExcludingChat().toLowerCase();
       const limitPhrases = [
         "reached the daily limit",
         "limit reached",
@@ -280,7 +335,7 @@ const SITE_CONFIGS = {
       return false;
     },
     getResetInfo: () => {
-      const body = document.body.innerText;
+      const body = getPageTextExcludingChat();
       const bannerReset = parseResetTime(body);
       if (bannerReset && bannerReset.mins < 24 * 60) {
         return { mins: bannerReset.mins, display: bannerReset.display, source: "banner" };
@@ -310,7 +365,7 @@ const SITE_CONFIGS = {
       'button:has(svg)'
     ],
     isLimitActive: () => {
-      const body = document.body.innerText.toLowerCase();
+      const body = getPageTextExcludingChat().toLowerCase();
       const limitPhrases = [
         "server capacity limited",
         "busy",
@@ -327,7 +382,7 @@ const SITE_CONFIGS = {
       return false;
     },
     getResetInfo: () => {
-      const body = document.body.innerText;
+      const body = getPageTextExcludingChat();
       const bannerReset = parseResetTime(body);
       if (bannerReset && bannerReset.mins < 24 * 60) {
         return { mins: bannerReset.mins, display: bannerReset.display, source: "banner" };
@@ -841,6 +896,9 @@ async function doSend(prompt) {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set ||
                      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
       if (setter) {
+        if (box._valueTracker) {
+          try { box._valueTracker.setValue(""); } catch {}
+        }
         setter.call(box, prompt);
       } else {
         box.value = prompt;
@@ -880,7 +938,12 @@ async function doSend(prompt) {
 
   // Click send button
   const btn = getSendBtn();
-  if (btn && !btn.disabled) {
+  if (btn) {
+    if (btn.disabled || btn.getAttribute("disabled") !== null) {
+      btn.disabled = false;
+      btn.removeAttribute("disabled");
+      btn.classList.remove("disabled");
+    }
     btn.click();
     await wait(600);
     return { sent: true, method: "button" };
