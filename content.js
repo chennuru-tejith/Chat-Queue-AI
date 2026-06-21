@@ -647,6 +647,9 @@ function removeCustomTemplate(idx) {
 function playNotificationChime() {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === "suspended") {
+      ctx.resume().catch(() => {});
+    }
     const notes = [523.25, 659.25, 783.99]; // C5, E5, G5 chord arpeggio
     notes.forEach((freq, i) => {
       const osc = ctx.createOscillator();
