@@ -834,14 +834,30 @@ async function doSend(prompt) {
     box.dispatchEvent(new Event("input", { bubbles: true }));
     box.dispatchEvent(new Event("change", { bubbles: true }));
     await wait(200);
-    box.value = prompt;
+    try {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set ||
+                     Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      if (setter) {
+        setter.call(box, prompt);
+      } else {
+        box.value = prompt;
+      }
+    } catch {
+      box.value = prompt;
+    }
     box.dispatchEvent(new Event("input", { bubbles: true }));
     box.dispatchEvent(new Event("change", { bubbles: true }));
   } else {
+    box.focus();
     document.execCommand("selectAll", false, null);
     document.execCommand("delete", false, null);
     await wait(200);
-    document.execCommand("insertText", false, prompt);
+    const success = document.execCommand("insertText", false, prompt);
+    if (!success || !box.innerText?.trim()) {
+      box.innerText = prompt;
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+      box.dispatchEvent(new Event("change", { bubbles: true }));
+    }
   }
   await wait(800);
 
@@ -872,7 +888,7 @@ async function doSend(prompt) {
   ["keydown", "keypress", "keyup"].forEach(t =>
     box.dispatchEvent(new KeyboardEvent(t, {
       key: "Enter", code: "Enter", keyCode: 13,
-      which: 13, bubbles: true, cancelable: true
+      which: 13, bubbles: true, cancelable: true, shiftKey: false
     }))
   );
   await wait(600);

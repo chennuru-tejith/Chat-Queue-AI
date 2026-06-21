@@ -180,10 +180,10 @@ function checkImmediately() {
     if (!s?.active) return;
 
     findOrOpenTab(s.chatUrl, (tabId, wasCreated) => {
-      if (!tabId) { addLog("Could not find/open Claude tab"); return; }
+      if (!tabId) { addLog("Could not find/open AI tab"); return; }
 
       ensureTabReady(tabId, ready => {
-        if (!ready) { addLog("Claude tab load timed out"); return; }
+        if (!ready) { addLog("AI tab load timed out"); return; }
 
         // Give page 2 seconds to run content scripts if newly created
         setTimeout(() => {
@@ -247,7 +247,7 @@ function attemptSend(state) {
 
   findOrOpenTab(state.chatUrl, (tabId, wasCreated) => {
     if (!tabId) {
-      addLog("Could not reach Claude tab. Will retry next cycle.");
+      addLog("Could not reach AI tab. Will retry next cycle.");
       return;
     }
 
@@ -358,8 +358,9 @@ function findOrOpenTab(chatUrl, callback) {
 
     chrome.tabs.query({ url: queryUrl }, tabs => {
       // Prefer exact chat URL
+      const suffix = chatUrl.split("/").filter(Boolean).pop();
       const exact = tabs.find(t => t.url === chatUrl ||
-        (t.url && t.url.includes(chatUrl.split("/").pop())));
+        (suffix && suffix.length > 5 && t.url && t.url.includes(suffix)));
       if (exact) { callback(exact.id, false); return; }
       // Any tab in this domain
       if (tabs[0]) { callback(tabs[0].id, false); return; }
