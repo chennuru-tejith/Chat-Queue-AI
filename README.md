@@ -2,25 +2,28 @@
   <img src="assets/banner.png" alt="ChatQueue AI Banner" width="100%">
 </p>
 
-<h1 align="center">ChatQueue AI</h1>
+<h1 align="center">⏱ ChatQueue AI</h1>
 
 <p align="center">
-  <strong>An elegant, local-first Chrome extension that automatically queues your prompts, monitors rate limits, and resumes your conversations the moment your AI Agent is ready. Supports Claude, ChatGPT, Gemini, and DeepSeek.</strong>
+  <strong>An elegant, local-first browser extension that queues your prompts, auto-saves drafts, monitors rate limits, and automatically resumes your conversations the moment your AI Agent is ready.</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/chennuru-tejith/Claude-Chat-Resume-Bot/blob/main/LICENSE"><img src="https://img.shields.io/github/license/chennuru-tejith/Claude-Chat-Resume-Bot?style=for-the-badge&color=7c3aed" alt="License"></a>
-  <a href="https://github.com/chennuru-tejith/Claude-Chat-Resume-Bot/stargazers"><img src="https://img.shields.io/github/stars/chennuru-tejith/Claude-Chat-Resume-Bot?style=for-the-badge&color=10b981" alt="Stars"></a>
-  <a href="https://github.com/chennuru-tejith/Claude-Chat-Resume-Bot/issues"><img src="https://img.shields.io/github/issues/chennuru-tejith/Claude-Chat-Resume-Bot?style=for-the-badge&color=3b82f6" alt="Issues"></a>
-  <img src="https://img.shields.io/badge/Platform-Chrome%20%7C%20Edge%20%7C%20Brave-violet?style=for-the-badge" alt="Platforms">
+  <a href="https://github.com/chennuru-tejith/Chat-Queue-AI/blob/main/LICENSE"><img src="https://img.shields.io/github/license/chennuru-tejith/Chat-Queue-AI?style=for-the-badge&color=7c3aed" alt="License"></a>
+  <a href="https://github.com/chennuru-tejith/Chat-Queue-AI/stargazers"><img src="https://img.shields.io/github/stars/chennuru-tejith/Chat-Queue-AI?style=for-the-badge&color=10b981" alt="Stars"></a>
+  <a href="https://github.com/chennuru-tejith/Chat-Queue-AI/issues"><img src="https://img.shields.io/github/issues/chennuru-tejith/Chat-Queue-AI?style=for-the-badge&color=3b82f6" alt="Issues"></a>
+  <img src="https://img.shields.io/badge/Platform-Chrome%20%7C%20Edge%20%7C%20Brave%20%7C%20Opera-violet?style=for-the-badge" alt="Platforms">
 </p>
 
 ---
 
 ## ⚡️ Key Features
 
-*   🔄 **Smart Rate-Limit Auto-Resume**: Automatically monitors for usage limit banners, sleeps during limits, and types + sends your prompt the second the AI agent becomes available.
-*   🤖 **Multi-Agent Driver Support**: Built-in compatibility layer with specific DOM selectors and input dispatchers for **Claude**, **ChatGPT**, **Gemini**, and **DeepSeek**.
+*   🔄 **Smart Rate-Limit Auto-Resume**: Automatically monitors for usage limit banners (supporting Claude, ChatGPT, Gemini, and DeepSeek), sleeps during limits, and types + sends your prompt the second the AI agent becomes available.
+*   📝 **Gmail-like Drafts Auto-Saving**: Never lose a prompt! Automatically auto-saves your prompt draft, chat URL, interval, and resets on every keystroke. Changes are synced in real-time between the popup and the in-page panel.
+*   🔌 **Active AI Composer Sync**: Automatically grabs whatever query you typed into the AI's native composer when the extension loads. Clicking the **🔄 Sync AI Input** button instantly fetches the latest text from the active AI input box.
+*   📚 **Interactive Prompt History**: A persistent log of recently sent prompts. Click any previous prompt in the Settings panel to instantly reload the draft and queue configuration.
+*   🎛 **Maximalistic Control Panel**: Toggle preferences on the fly—enable/disable Sound Chimes, toggle Floating Action Badges on chat pages in real-time, or clear parameters with one click.
 *   📊 **Native Composer Progress Bar**: Sleek Session (5h) and Weekly (7d) usage bars injected directly below Claude's input box (with dynamic API querying).
 *   🕒 **Absolute Reset Time Parsing**: Reads absolute limit times (e.g. `until 4:30 AM` or `in 15 minutes`) and calculates dynamic countdown timers automatically.
 *   🔏 **Local-First & Private**: Direct browser-to-API communication using your active session. No telemetry, tracking, or external servers.
@@ -31,10 +34,23 @@
 
 ---
 
+## 📸 visual Tour
+
+<p align="center">
+  <img src="assets/chatqueue_logo.png" alt="ChatQueue AI Logo" width="200" style="border-radius: 24px; box-shadow: 0 4px 20px rgba(139, 92, 246, 0.3);">
+</p>
+
+- **Setup Panel**: Standard glassmorphism configuration card for entering Chat URLs, editing prompts, and applying templates.
+- **Settings Dashboard**: Access preferences (Sound alerts, FAB toggle, Auto-capture toggle) and scroll through your past **Prompt History** log list.
+- **Status Dashboard**: Live monitoring feedback showing active wait times, count down tickers, and retry attempts.
+- **Log Terminal**: Real-time terminal reporting on limit detections, status changes, and prompt submission results.
+
+---
+
 ## 🚀 Quick Start
 
 ### 1. Install locally (Developer Mode)
-1.  [📥 Download the Pre-packaged ZIP](https://github.com/chennuru-tejith/Claude-Chat-Resume-Bot/raw/main/chatqueue-ai.zip) and extract it (or clone this repository) to your local machine.
+1.  [📥 Download the Pre-packaged ZIP](https://github.com/chennuru-tejith/Chat-Queue-AI/raw/main/chatqueue-ai.zip) and extract it (or clone this repository) to your local machine.
 2.  Open Chrome (or Brave, Edge, Opera) and navigate to `chrome://extensions`.
 3.  Toggle the **Developer mode** switch in the top-right corner.
 4.  Click **Load unpacked** in the top-left and select the extracted folder (where `manifest.json` is located).
@@ -54,10 +70,11 @@
 ## 🛠 Repository Structure
 
 ```text
-├── manifest.json       # Extension metadata
+├── manifest.json       # Extension metadata & permissions
 ├── background.js       # Background service worker (alarms, tabs, limits)
 ├── content.js          # In-page UI, limit checkers, API fetchers
-├── icons/              # Extension logo icons
+├── icons/              # Extension logo icons (16x16, 48x48, 128x128)
+├── assets/             # Marketing banner and visual assets
 ├── popup/              # Toolbar popup UI (html, js, css)
 ├── LICENSE             # Project license
 └── README.md           # Documentation
@@ -65,9 +82,18 @@
 
 ---
 
+## 🗺 Roadmap & Upcoming Features
+
+- [ ] **Multi-Prompt Queueing**: Chain multiple prompts in sequence to execute one after the other as limits reset.
+- [ ] **Custom Notification Soundboards**: Choose from a list of chime styles or upload custom `.mp3` alerts.
+- [ ] **Advanced Scheduling**: Delay prompt queues to send at specific calendar times.
+- [ ] **Syncing across Devices**: Option to backup templates and settings to Chrome Cloud Storage.
+
+---
+
 ## 🤝 Contributing
 
-Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/chennuru-tejith/Claude-Chat-Resume-Bot/issues).
+Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/chennuru-tejith/Chat-Queue-AI/issues).
 
 If you find this project helpful, please give it a ⭐️ on GitHub! It helps more developers discover the tool.
 
