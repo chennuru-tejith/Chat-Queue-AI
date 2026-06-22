@@ -701,12 +701,14 @@
     <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: var(--surface); border-radius: var(--radius-sm); border: 1px solid var(--border); margin-bottom: 10px; backdrop-filter: blur(8px);">
       <div style="display: flex; flex-direction: column; gap: 2px;">
         <span style="font-weight: 500; font-size: 12px;">Sound Alerts</span>
-        <span style="color: var(--muted); font-size: 10px;">Play chime on successful prompt send</span>
+        <span style="color: var(--muted); font-size: 10px;">Select alert type on prompt send</span>
       </div>
-      <label class="switch" style="margin: 0;">
-        <input type="checkbox" id="chkSound" checked />
-        <span class="slider"></span>
-      </label>
+      <select id="selSound" style="background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); border-radius: var(--radius-sm); color: #e5e7eb; font-size: 12px; padding: 4px 8px; outline: none; cursor: pointer; font-family: var(--font-body); max-width: 110px;">
+        <option value="chime" style="background-color: var(--surface-solid); color: var(--text);">Chime</option>
+        <option value="beep" style="background-color: var(--surface-solid); color: var(--text);">Beep</option>
+        <option value="tts" style="background-color: var(--surface-solid); color: var(--text);">TTS Voice</option>
+        <option value="none" style="background-color: var(--surface-solid); color: var(--text);">None</option>
+      </select>
     </div>
 
     <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: var(--surface); border-radius: var(--radius-sm); border: 1px solid var(--border); margin-bottom: 10px; backdrop-filter: blur(8px);">

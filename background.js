@@ -11,60 +11,81 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true });
       return false; // synchronous
     case "STOP_RESUME":
-      stopResume();
+      stopResume(msg.chatUrl);
       sendResponse({ ok: true });
       return false; // synchronous
     case "LIMIT_DETECTED":
-      onLimitDetected(msg.resetMinutes);
+      onLimitDetected(msg.chatUrl || sender.tab?.url, msg.resetMinutes);
       sendResponse({ ok: true });
       return false; // synchronous
     case "GET_STATUS":
-      chrome.storage.local.get("resumeState", d => {
-        sendResponse({ state: d.resumeState || null });
+      chrome.storage.local.get("queues", d => {
+        const queues = d.queues || {};
+        const url = msg.chatUrl || sender.tab?.url || "";
+        const state = url ? (queues[url] || null) : null;
+        sendResponse({ state, queues });
       });
       return true; // asynchronous
     case "SET_SOUND_PREF":
-      chrome.storage.local.set({ soundEnabled: msg.data.enabled }, () => {
+      chrome.storage.local.set({ soundPref: msg.data.soundPref }, () => {
         sendResponse({ ok: true });
       });
       return true; // asynchronous
     case "GET_SOUND_PREF":
-      chrome.storage.local.get("soundEnabled", d => {
-        sendResponse({ enabled: d.soundEnabled !== undefined ? d.soundEnabled : true });
+      chrome.storage.local.get("soundPref", d => {
+        sendResponse({ soundPref: d.soundPref || "chime" });
       });
       return true; // asynchronous
     case "LOCAL_SEND_START":
-      updateState(s => { s.status = "sending"; return s; }, "In-page instant-send triggered...");
-      sendResponse({ ok: true });
-      return false; // synchronous
-    case "LOCAL_SEND_SUCCESS":
-      updateState(s => { s.status = "done"; s.active = false; return s; },
-        `✓ Prompt sent successfully via in-page instant checker! (${msg.method || "ok"})`);
-      chrome.alarms.clear(ALARM);
-      chrome.alarms.clear("ar-wait-end");
-      if (fastBgTimeout) clearTimeout(fastBgTimeout);
-
-      if (sender.tab && sender.tab.id) {
-        chrome.tabs.update(sender.tab.id, { active: true }, () => {
-          if (sender.tab.windowId) {
-            chrome.windows.update(sender.tab.windowId, { focused: true });
-          }
-        });
+      {
+        const chatUrl = msg.chatUrl || sender.tab?.url;
+        if (chatUrl) {
+          updateState(chatUrl, s => { s.status = "sending"; return s; }, "In-page instant-send triggered...");
+        }
+        sendResponse({ ok: true });
+        return false; // synchronous
       }
+    case "LOCAL_SEND_SUCCESS":
+      {
+        const chatUrl = msg.chatUrl || sender.tab?.url;
+        if (chatUrl) {
+          updateState(chatUrl, s => { s.status = "done"; s.active = false; return s; },
+            `✓ Prompt sent successfully via in-page instant checker! (${msg.method || "ok"})`);
+          chrome.alarms.clear(ALARM);
+          chrome.alarms.clear("ar-wait-end|" + chatUrl);
+          if (fastBgTimeouts[chatUrl]) {
+            clearTimeout(fastBgTimeouts[chatUrl]);
+            delete fastBgTimeouts[chatUrl];
+          }
+        }
 
-      chrome.notifications.create({
-        type: "basic",
-        iconUrl: "icons/icon48.png",
-        title: "ChatQueue AI ✓",
-        message: "Your prompt was sent! The AI is responding."
-      });
-      sendResponse({ ok: true });
-      return false; // synchronous
+        if (sender.tab && sender.tab.id) {
+          chrome.tabs.update(sender.tab.id, { active: true }, () => {
+            if (sender.tab.windowId) {
+              chrome.windows.update(sender.tab.windowId, { focused: true });
+            }
+          });
+        }
+
+        chrome.notifications.create({
+          type: "basic",
+          iconUrl: "icons/icon48.png",
+          title: "ChatQueue AI ✓",
+          message: "Your prompt was sent! The AI is responding."
+        });
+        sendResponse({ ok: true });
+        return false; // synchronous
+      }
     case "LOCAL_SEND_FAILED":
-      updateState(s => { s.status = "checking"; return s; },
-        `Instant-send failed: ${msg.reason || "unknown"}. Re-entering checks...`);
-      sendResponse({ ok: true });
-      return false; // synchronous
+      {
+        const chatUrl = msg.chatUrl || sender.tab?.url;
+        if (chatUrl) {
+          updateState(chatUrl, s => { s.status = "checking"; return s; },
+            `Instant-send failed: ${msg.reason || "unknown"}. Re-entering checks...`);
+        }
+        sendResponse({ ok: true });
+        return false; // synchronous
+      }
     default:
       return false; // Unhandled type: do not return true to prevent port leaks
   }
@@ -83,9 +104,10 @@ function startResume(data) {
   });
   if (!isValid) return;
 
+  const chatUrl = data.chatUrl;
   const state = {
     active: true,
-    chatUrl: data.chatUrl,
+    chatUrl: chatUrl,
     prompt: data.prompt,
     resetMinutes: data.resetMinutes ?? 0,
     checkInterval: data.checkInterval || 60,
@@ -96,100 +118,156 @@ function startResume(data) {
     log: [`[${ts()}] ChatQueue AI started. Monitoring for usage limit...`]
   };
 
-  chrome.storage.local.set({ resumeState: state }, () => {
-    chrome.alarms.clear(ALARM, () => {
-      // Alarm fires every minute for monitoring
-      chrome.alarms.create(ALARM, { periodInMinutes: 1 });
+  chrome.storage.local.get("queues", d => {
+    const queues = d.queues || {};
+    queues[chatUrl] = state;
+    chrome.storage.local.set({ queues, resumeState: state }, () => {
+      chrome.alarms.clear(ALARM, () => {
+        chrome.alarms.create(ALARM, { periodInMinutes: 1 });
+      });
+      broadcast(state);
+      updateBadge(queues);
+      setTimeout(() => checkImmediately(chatUrl), 2000);
     });
-    broadcast(state);
-    updateBadge(state);
-
-    // Check immediately — don't wait 60s
-    setTimeout(() => checkImmediately(), 2000);
   });
 }
 
 // ── Stop ──────────────────────────────────────────────────────────────
-function stopResume() {
-  chrome.alarms.clear(ALARM);
-  chrome.alarms.clear("ar-wait-end");
-  if (fastBgTimeout) clearTimeout(fastBgTimeout);
-  updateState(s => {
-    s.active = false;
-    s.status = "stopped";
-    return s;
-  }, "Stopped by user.");
+function stopResume(chatUrl) {
+  chrome.storage.local.get("queues", d => {
+    const queues = d.queues || {};
+    let lastStopped = null;
+    if (chatUrl && queues[chatUrl]) {
+      queues[chatUrl].active = false;
+      queues[chatUrl].status = "stopped";
+      queues[chatUrl].log.push(`[${ts()}] Stopped by user.`);
+      lastStopped = queues[chatUrl];
+    } else {
+      for (const url in queues) {
+        if (queues[url].active) {
+          queues[url].active = false;
+          queues[url].status = "stopped";
+          queues[url].log.push(`[${ts()}] Stopped by user.`);
+          lastStopped = queues[url];
+        }
+      }
+    }
+    chrome.storage.local.set({ queues, resumeState: lastStopped }, () => {
+      const anyActive = Object.values(queues).some(q => q.active);
+      if (!anyActive) {
+        chrome.alarms.clear(ALARM);
+        for (const url in fastBgTimeouts) {
+          clearTimeout(fastBgTimeouts[url]);
+          delete fastBgTimeouts[url];
+        }
+      }
+      if (chatUrl && queues[chatUrl]) {
+        broadcast(queues[chatUrl]);
+      } else {
+        Object.values(queues).forEach(q => broadcast(q));
+      }
+      updateBadge(queues);
+    });
+  });
 }
 
 // ── Alarm tick ────────────────────────────────────────────────────────
 chrome.alarms.onAlarm.addListener(alarm => {
-  if (alarm.name === "ar-wait-end") {
-    // Wait-end alarm: switch from waiting to checking
-    chrome.storage.local.get("resumeState", d => {
-      const s = d.resumeState;
-      if (!s?.active || s.status !== "waiting") return;
-      updateState(st => { st.status = "checking"; return st; },
-        "Wait complete. Waking up tab and starting checks...");
+  if (alarm.name.startsWith("ar-wait-end|")) {
+    const chatUrl = alarm.name.split("|").slice(1).join("|");
+    chrome.storage.local.get("queues", d => {
+      const queues = d.queues || {};
+      const s = queues[chatUrl];
+      if (!s || !s.active || s.status !== "waiting") return;
       
-      // Wake up tab by focusing it
-      findOrOpenTab(s.chatUrl, (tabId) => {
-        if (tabId) {
-          chrome.tabs.update(tabId, { active: true });
-        }
-      });
-
-      // Switch alarm back to 1 min for checking
-      chrome.alarms.clear(ALARM, () => {
-        chrome.alarms.create(ALARM, { periodInMinutes: 1 });
+      s.status = "checking";
+      s.log.push(`[${ts()}] Wait complete. Waking up tab and starting checks...`);
+      
+      chrome.storage.local.set({ queues }, () => {
+        findOrOpenTab(chatUrl, (tabId) => {
+          if (tabId) {
+            chrome.tabs.update(tabId, { active: true });
+          }
+        });
+        broadcast(s);
+        updateBadge(queues);
       });
     });
     return;
   }
 
   if (alarm.name !== ALARM) return;
-  chrome.storage.local.get("resumeState", d => {
-    const s = d.resumeState;
-    if (!s?.active) { chrome.alarms.clear(ALARM); return; }
+  
+  chrome.storage.local.get("queues", d => {
+    const queues = d.queues || {};
+    let updated = false;
 
-    if (s.status === "monitoring") {
-      // Ask the Claude tab if limit is active
-      checkImmediately();
-    } else if (s.status === "waiting") {
-      const elapsed = (Date.now() - s.limitDetectedAt) / 60000;
-      const rem = s.resetMinutes - elapsed;
-      if (rem <= 0) {
-        // Time is up — start checking
-        updateState(st => { st.status = "checking"; return st; },
-          `Wait complete. Waking up tab and starting checks...`);
-        
-        // Wake up tab by focusing it
-        findOrOpenTab(s.chatUrl, (tabId) => {
-          if (tabId) {
-            chrome.tabs.update(tabId, { active: true });
-          }
-        });
-      } else {
-        addLog(`Waiting... ${Math.ceil(rem)} min remaining`);
+    // Check offline status
+    if (navigator.onLine === false) {
+      for (const url in queues) {
+        if (queues[url].active && queues[url].status !== "waiting" && !queues[url].log[queues[url].log.length - 1].includes("offline")) {
+          queues[url].log.push(`[${ts()}] Network offline. Pausing checks...`);
+          updated = true;
+        }
       }
-    } else if (s.status === "checking") {
-      attemptSend(s);
+      if (updated) {
+        chrome.storage.local.set({ queues }, () => {
+          Object.values(queues).forEach(q => broadcast(q));
+        });
+      }
+      return;
+    }
+
+    for (const url in queues) {
+      const s = queues[url];
+      if (!s.active) continue;
+
+      if (s.status === "monitoring") {
+        checkImmediately(url);
+      } else if (s.status === "waiting") {
+        const elapsed = (Date.now() - s.limitDetectedAt) / 60000;
+        const rem = s.resetMinutes - elapsed;
+        if (rem <= 0) {
+          s.status = "checking";
+          s.log.push(`[${ts()}] Wait complete. Waking up tab and starting checks...`);
+          updated = true;
+          findOrOpenTab(url, (tabId) => {
+            if (tabId) {
+              chrome.tabs.update(tabId, { active: true });
+            }
+          });
+        } else {
+          s.log.push(`[${ts()}] Waiting... ${Math.ceil(rem)} min remaining`);
+          updated = true;
+        }
+      } else if (s.status === "checking") {
+        attemptSend(s);
+      }
+    }
+
+    if (updated) {
+      chrome.storage.local.set({ queues }, () => {
+        Object.values(queues).forEach(q => broadcast(q));
+        updateBadge(queues);
+      });
     }
   });
 });
 
 // ── Immediately check limit state ────────────────────────────────────
-function checkImmediately() {
-  chrome.storage.local.get("resumeState", d => {
-    const s = d.resumeState;
-    if (!s?.active) return;
+function checkImmediately(chatUrl) {
+  if (!chatUrl) return;
+  chrome.storage.local.get("queues", d => {
+    const queues = d.queues || {};
+    const s = queues[chatUrl];
+    if (!s || !s.active) return;
 
-    findOrOpenTab(s.chatUrl, (tabId, wasCreated) => {
-      if (!tabId) { addLog("Could not find/open AI tab"); return; }
+    findOrOpenTab(chatUrl, (tabId, wasCreated) => {
+      if (!tabId) { addLog(chatUrl, "Could not find/open AI tab"); return; }
 
       ensureTabReady(tabId, ready => {
-        if (!ready) { addLog("AI tab load timed out"); return; }
+        if (!ready) { addLog(chatUrl, "AI tab load timed out"); return; }
 
-        // Give page 2 seconds to run content scripts if newly created
         setTimeout(() => {
           chrome.tabs.sendMessage(tabId, { type: "CHECK_LIMIT" }, resp => {
             if (chrome.runtime.lastError || !resp) return;
@@ -197,7 +275,7 @@ function checkImmediately() {
             if (resp.limited) {
               chrome.tabs.sendMessage(tabId, { type: "GET_RESET_INFO" }, ri => {
                 const mins = (ri && ri.mins) ? ri.mins : 0;
-                onLimitDetected(mins);
+                onLimitDetected(chatUrl, mins);
               });
             } else if (resp.canType) {
               attemptSend(s);
@@ -210,48 +288,46 @@ function checkImmediately() {
 }
 
 // ── Limit detected ────────────────────────────────────────────────────
-function onLimitDetected(detectedMins) {
-  chrome.storage.local.get("resumeState", d => {
-    const s = d.resumeState;
-    if (!s?.active || s.limitDetectedAt) return; // already handling
+function onLimitDetected(chatUrl, detectedMins) {
+  if (!chatUrl) return;
+  chrome.storage.local.get("queues", d => {
+    const queues = d.queues || {};
+    const s = queues[chatUrl];
+    if (!s || !s.active || s.limitDetectedAt) return;
 
     const minsToWait = detectedMins || s.resetMinutes || 180;
+    s.limitDetectedAt = Date.now();
+    s.status = "waiting";
+    s.resetMinutes = minsToWait;
+    s.log.push(`[${ts()}] Usage limit detected! Waiting ${minsToWait} min before checking...`);
 
-    updateState(st => {
-      st.limitDetectedAt = Date.now();
-      st.status = "waiting";
-      st.resetMinutes = minsToWait;
-      return st;
-    }, `Usage limit detected! Waiting ${minsToWait} min before checking...`);
+    chrome.storage.local.set({ queues }, () => {
+      broadcast(s);
+      updateBadge(queues);
 
-    // Use alarm for the wait (survives SW sleep)
-    chrome.alarms.clear(ALARM, () => {
-      // During wait: alarm every 2 min to update progress
-      chrome.alarms.create(ALARM, { periodInMinutes: 2 });
-      // After wait: create a one-shot alarm to switch to checking
-      chrome.alarms.create("ar-wait-end", { delayInMinutes: minsToWait });
+      const alarmName = "ar-wait-end|" + chatUrl;
+      chrome.alarms.create(alarmName, { delayInMinutes: minsToWait });
     });
   });
 }
 
 // ── Attempt to send ───────────────────────────────────────────────────
 function attemptSend(state) {
+  const chatUrl = state.chatUrl;
   const attempt = (state.attempts || 0) + 1;
 
   if (attempt >= MAX_ATTEMPTS) {
-    addLog(`✗ Gave up after ${MAX_ATTEMPTS} attempts.`);
-    updateState(s => { s.active = false; s.status = "failed"; return s; });
-    chrome.alarms.clear(ALARM);
-    chrome.alarms.clear("ar-wait-end");
+    addLog(chatUrl, `✗ Gave up after ${MAX_ATTEMPTS} attempts.`);
+    updateState(chatUrl, s => { s.active = false; s.status = "failed"; return s; });
     return;
   }
 
-  updateState(s => { s.attempts = attempt; return s; });
-  addLog(`Check #${attempt} — testing if limit has reset...`);
+  updateState(chatUrl, s => { s.attempts = attempt; return s; });
+  addLog(chatUrl, `Check #${attempt} — testing if limit has reset...`);
 
-  findOrOpenTab(state.chatUrl, (tabId, wasCreated) => {
+  findOrOpenTab(chatUrl, (tabId, wasCreated) => {
     if (!tabId) {
-      addLog("Could not reach AI tab. Will retry next cycle.");
+      addLog(chatUrl, "Could not reach AI tab. Will retry next cycle.");
       return;
     }
 
@@ -259,10 +335,9 @@ function attemptSend(state) {
       chrome.tabs.reload(tabId, { bypassCache: true }, () => {
         ensureTabReady(tabId, ready => {
           if (!ready) {
-            addLog("Tab reload timed out. Will retry next cycle.");
+            addLog(chatUrl, "Tab reload timed out. Will retry next cycle.");
             return;
           }
-          // Wait 3.5s for page scripts initialization and DOM hydration
           setTimeout(() => runCheck(true), 3500);
         });
       });
@@ -271,28 +346,27 @@ function attemptSend(state) {
     const runCheck = (isFresh) => {
       chrome.tabs.get(tabId, tab => {
         if (chrome.runtime.lastError || !tab) {
-          addLog("Tab was closed. Will retry next cycle.");
+          addLog(chatUrl, "Tab was closed. Will retry next cycle.");
           return;
         }
         chrome.tabs.sendMessage(tabId, { type: "CHECK_LIMIT" }, resp => {
           if (chrome.runtime.lastError || !resp) {
             if (!isFresh) {
-              addLog("Tab unresponsive. Reloading connection...");
+              addLog(chatUrl, "Tab unresponsive. Reloading connection...");
               reloadAndProceed();
             } else {
-              addLog("Content script not responding. Retrying...");
+              addLog(chatUrl, "Content script not responding. Retrying...");
             }
             return;
           }
 
           if (resp.limited) {
-            addLog(`Still limited. Retrying...`);
-            scheduleFastBackgroundCheck(10000);
+            addLog(chatUrl, `Still limited. Retrying...`);
+            scheduleFastBackgroundCheck(chatUrl, 10000);
             return;
           }
 
           if (resp.canType) {
-            // Focus tab and window to wake it up
             chrome.tabs.update(tabId, { active: true }, () => {
               chrome.tabs.get(tabId, tab => {
                 if (!chrome.runtime.lastError && tab && tab.windowId) {
@@ -301,51 +375,55 @@ function attemptSend(state) {
               });
             });
 
-            addLog("Limit has RESET! Sending prompt now...");
-            updateState(s => { s.status = "sending"; return s; });
+            addLog(chatUrl, "Limit has RESET! Sending prompt now...");
+            updateState(chatUrl, s => { s.status = "sending"; return s; });
 
-            chrome.tabs.sendMessage(tabId, {
-              type: "CHECK_AND_SEND",
-              prompt: state.prompt
-            }, result => {
-              if (chrome.runtime.lastError || !result) {
-                addLog("Send failed — will retry next cycle.");
-                updateState(s => { s.status = "checking"; return s; });
-                return;
-              }
+            chrome.storage.local.get("soundPref", sp => {
+              const sound = sp.soundPref || "chime";
 
-              if (result.sent) {
-                addLog(`✓ Prompt sent successfully! (${result.method || "ok"})`);
-                updateState(s => { s.status = "done"; s.active = false; return s; });
-                chrome.alarms.clear(ALARM);
-                chrome.alarms.clear("ar-wait-end");
+              chrome.tabs.sendMessage(tabId, {
+                type: "CHECK_AND_SEND",
+                prompt: state.prompt,
+                soundPref: sound
+              }, result => {
+                if (chrome.runtime.lastError || !result) {
+                  addLog(chatUrl, "Send failed — will retry next cycle.");
+                  updateState(chatUrl, s => { s.status = "checking"; return s; });
+                  return;
+                }
 
-                chrome.notifications.create({
-                  type: "basic",
-                  iconUrl: "icons/icon48.png",
-                  title: "ChatQueue AI ✓",
-                  message: "Your prompt was sent! The AI is responding."
-                });
+                if (result.sent) {
+                  addLog(chatUrl, `✓ Prompt sent successfully! (${result.method || "ok"})`);
+                  updateState(chatUrl, s => { s.status = "done"; s.active = false; return s; });
 
-                chrome.storage.local.get("soundEnabled", d => {
-                  if (d.soundEnabled !== false) {
-                    chrome.tabs.sendMessage(tabId, { type: "PLAY_NOTIFICATION_SOUND" },
+                  const alarmName = "ar-wait-end|" + chatUrl;
+                  chrome.alarms.clear(alarmName);
+
+                  chrome.notifications.create({
+                    type: "basic",
+                    iconUrl: "icons/icon48.png",
+                    title: "ChatQueue AI ✓",
+                    message: "Your prompt was sent! The AI is responding."
+                  });
+
+                  if (sound !== "none") {
+                    chrome.tabs.sendMessage(tabId, { type: "PLAY_NOTIFICATION_SOUND", soundPref: sound },
                       () => chrome.runtime.lastError);
                   }
-                });
 
-                chrome.tabs.update(tabId, { active: true });
+                  chrome.tabs.update(tabId, { active: true });
 
-              } else if (result.reason === "still_limited") {
-                addLog("Page says still limited. Retrying...");
-                updateState(s => { s.status = "checking"; return s; });
-              } else {
-                addLog(`Send failed: ${result.reason}. Retrying...`);
-                updateState(s => { s.status = "checking"; return s; });
-              }
+                } else if (result.reason === "still_limited") {
+                  addLog(chatUrl, "Page says still limited. Retrying...");
+                  updateState(chatUrl, s => { s.status = "checking"; return s; });
+                } else {
+                  addLog(chatUrl, `Send failed: ${result.reason}. Retrying...`);
+                  updateState(chatUrl, s => { s.status = "checking"; return s; });
+                }
+              });
             });
           } else {
-            addLog("Cannot type yet. Still waiting...");
+            addLog(chatUrl, "Cannot type yet. Still waiting...");
           }
         });
       });
@@ -354,16 +432,15 @@ function attemptSend(state) {
     if (wasCreated) {
       ensureTabReady(tabId, ready => {
         if (!ready) {
-          addLog("Created tab load timed out. Retrying next cycle.");
+          addLog(chatUrl, "Created tab load timed out. Retrying next cycle.");
           return;
         }
         setTimeout(() => runCheck(true), 3500);
       });
     } else {
-      // Ping the tab first. If it responds, check immediately without reloading!
       chrome.tabs.sendMessage(tabId, { type: "CHECK_LIMIT" }, resp => {
         if (chrome.runtime.lastError || !resp) {
-          addLog("Tab not responding. Reloading tab...");
+          addLog(chatUrl, "Tab not responding. Reloading tab...");
           reloadAndProceed();
         } else {
           runCheck(false);
@@ -427,7 +504,6 @@ function ensureTabReady(tabId, callback) {
         }
       };
       chrome.tabs.onUpdated.addListener(listener);
-      // Timeout after 15 seconds to prevent memory leaks
       setTimeout(() => {
         chrome.tabs.onUpdated.removeListener(listener);
         if (!resolved) {
@@ -440,9 +516,11 @@ function ensureTabReady(tabId, callback) {
 }
 
 // ── State helpers ─────────────────────────────────────────────────────
-function updateState(mutator, logMsg) {
-  chrome.storage.local.get("resumeState", d => {
-    const s = d.resumeState;
+function updateState(chatUrl, mutator, logMsg) {
+  if (!chatUrl) return;
+  chrome.storage.local.get("queues", d => {
+    const queues = d.queues || {};
+    const s = queues[chatUrl];
     if (!s) return;
     const updated = mutator(s);
     if (!updated) return;
@@ -451,15 +529,16 @@ function updateState(mutator, logMsg) {
       updated.log.push(`[${ts()}] ${logMsg}`);
       if (updated.log.length > 80) updated.log = updated.log.slice(-80);
     }
-    chrome.storage.local.set({ resumeState: updated }, () => {
+    queues[chatUrl] = updated;
+    chrome.storage.local.set({ queues, resumeState: updated }, () => {
       broadcast(updated);
-      updateBadge(updated);
+      updateBadge(queues);
     });
   });
 }
 
-function addLog(msg) {
-  updateState(s => {
+function addLog(chatUrl, msg) {
+  updateState(chatUrl, s => {
     s.log = s.log || [];
     s.log.push(`[${ts()}] ${msg}`);
     if (s.log.length > 80) s.log = s.log.slice(-80);
@@ -469,18 +548,10 @@ function addLog(msg) {
 
 function broadcast(state) {
   if (!state) return;
-  const allowedDomains = ["claude.ai", "chatgpt.com", "gemini.google.com", "deepseek.com"];
   chrome.tabs.query({}, tabs => {
     for (const tab of tabs) {
-      if (tab.url) {
-        try {
-          const parsed = new URL(tab.url);
-          if (allowedDomains.some(d => parsed.hostname.includes(d))) {
-            chrome.tabs.sendMessage(tab.id, { type: "STATE_UPDATED", state },
-              () => chrome.runtime.lastError);
-          }
-        } catch {}
-      }
+      chrome.tabs.sendMessage(tab.id, { type: "STATE_UPDATED", state },
+        () => chrome.runtime.lastError);
     }
   });
 }
@@ -489,62 +560,39 @@ function ts() {
   return new Date().toLocaleTimeString("en-IN", { hour12: false });
 }
 
-function updateBadge(state) {
-  if (!state || !state.active) {
+function updateBadge(queues) {
+  if (!queues) {
+    chrome.action.setBadgeText({ text: "" });
+    return;
+  }
+  const activeList = Object.values(queues).filter(q => q.active);
+  const count = activeList.length;
+
+  if (count === 0) {
+    const allQueues = Object.values(queues);
+    const finished = allQueues.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0];
+    if (finished) {
+      if (finished.status === "done") {
+        chrome.action.setBadgeText({ text: "DONE" });
+        chrome.action.setBadgeBackgroundColor({ color: "#4ade80" });
+        return;
+      } else if (finished.status === "failed") {
+        chrome.action.setBadgeText({ text: "ERR" });
+        chrome.action.setBadgeBackgroundColor({ color: "#f87171" });
+        return;
+      }
+    }
     chrome.action.setBadgeText({ text: "" });
     return;
   }
 
-  let text = "";
-  let color = "#6e6e80"; // muted gray
-
-  switch (state.status) {
-    case "monitoring":
-      text = "MON";
-      color = "#4ade80"; // green
-      break;
-    case "waiting":
-      if (state.limitDetectedAt && state.resetMinutes) {
-        const elapsed = (Date.now() - state.limitDetectedAt) / 60000;
-        const remaining = Math.max(0, state.resetMinutes - elapsed);
-        if (remaining > 60) {
-          text = Math.ceil(remaining / 60) + "h";
-        } else {
-          text = Math.ceil(remaining) + "m";
-        }
-      } else {
-        text = "WAIT";
-      }
-      color = "#facc15"; // yellow
-      break;
-    case "checking":
-      text = "CHK";
-      color = "#60a5fa"; // blue
-      break;
-    case "sending":
-      text = "SEND";
-      color = "#60a5fa"; // blue
-      break;
-    case "done":
-      text = "DONE";
-      color = "#4ade80"; // green
-      break;
-    case "failed":
-      text = "ERR";
-      color = "#f87171"; // red
-      break;
-    default:
-      text = "ON";
-      color = "#a78bfa"; // purple
-  }
-
-  chrome.action.setBadgeText({ text });
-  chrome.action.setBadgeBackgroundColor({ color });
+  chrome.action.setBadgeText({ text: `${count}Q` });
+  chrome.action.setBadgeBackgroundColor({ color: "#d946ef" });
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.set({ resumeState: null });
-  updateBadge(null);
+  chrome.storage.local.set({ queues: {} });
+  updateBadge({});
 });
 
 // ── Keyboard shortcuts ─────────────────────────────────────────────────
@@ -570,12 +618,14 @@ chrome.commands.onCommand.addListener(command => {
 });
 
 // ── Fast background check loop helper ──────────────────────────────────
-let fastBgTimeout = null;
-function scheduleFastBackgroundCheck(ms) {
-  if (fastBgTimeout) clearTimeout(fastBgTimeout);
-  fastBgTimeout = setTimeout(() => {
-    chrome.storage.local.get("resumeState", d => {
-      const s = d.resumeState;
+let fastBgTimeouts = {};
+function scheduleFastBackgroundCheck(chatUrl, ms) {
+  if (!chatUrl) return;
+  if (fastBgTimeouts[chatUrl]) clearTimeout(fastBgTimeouts[chatUrl]);
+  fastBgTimeouts[chatUrl] = setTimeout(() => {
+    chrome.storage.local.get("queues", d => {
+      const queues = d.queues || {};
+      const s = queues[chatUrl];
       if (s && s.active && s.status === "checking") {
         attemptSend(s);
       }

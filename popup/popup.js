@@ -97,7 +97,8 @@ $("btnStart").addEventListener("click", () => {
 
 // ── Stop ──────────────────────────────────────────────────────────────
 $("btnStop").addEventListener("click", () => {
-  chrome.runtime.sendMessage({ type: "STOP_RESUME" }, () => {
+  const chatUrl = $("chatUrl").value.trim();
+  chrome.runtime.sendMessage({ type: "STOP_RESUME", chatUrl }, () => {
     toast("Stopped");
     updateUI();
   });
@@ -106,10 +107,11 @@ $("btnStop").addEventListener("click", () => {
 // ── Render status tab ─────────────────────────────────────────────────
 function renderStatus() {
   chrome.runtime.sendMessage({ type: "GET_STATUS" }, resp => {
-    const state = resp?.state;
+    const queues = resp?.queues || {};
     const el = $("statusContent");
 
-    if (!state || (!state.active && state.status !== "done" && state.status !== "failed")) {
+    const queueList = Object.values(queues);
+    if (queueList.length === 0) {
       el.innerHTML = `
         <div class="empty-state">
           <div class="empty-icon">🕒</div>
@@ -118,118 +120,144 @@ function renderStatus() {
       return;
     }
 
-    const statusChip = {
-      monitoring: `<span class="chip green">● Monitoring</span>`,
-      waiting:    `<span class="chip yellow">● Waiting</span>`,
-      checking:   `<span class="chip blue">● Checking</span>`,
-      sending:    `<span class="chip blue">● Sending</span>`,
-      done:       `<span class="chip green">✓ Done</span>`,
-      failed:     `<span class="chip red">✗ Failed</span>`,
-      stopped:    `<span class="chip gray">■ Stopped</span>`,
-    }[state.status] || `<span class="chip gray">${state.status}</span>`;
+    // Sort queueList: active first, then by startedAt descending
+    queueList.sort((a, b) => {
+      if (a.active && !b.active) return -1;
+      if (!a.active && b.active) return 1;
+      return (b.startedAt || 0) - (a.startedAt || 0);
+    });
 
-    // Progress calculation
-    let progress = 0;
-    let progressLabel = "";
-    if (state.limitDetectedAt && state.status === "waiting") {
-      const elapsed = (Date.now() - state.limitDetectedAt) / 60000;
-      progress = state.resetMinutes > 0
-        ? Math.min(95, (elapsed / state.resetMinutes) * 100)
-        : 95;
-      const remaining = Math.max(0, state.resetMinutes - elapsed);
-      progressLabel = `${Math.ceil(remaining)} min remaining`;
-    } else if (state.status === "done") {
-      progress = 100;
-      progressLabel = "Complete";
-    } else if (state.status === "monitoring") {
-      progressLabel = "Watching for usage limit...";
-    } else if (state.status === "checking") {
-      progressLabel = "Checking if limit has reset...";
-    }
+    let html = "";
+    queueList.forEach(q => {
+      const statusChip = {
+        monitoring: `<span class="chip green">● Monitoring</span>`,
+        waiting:    `<span class="chip yellow">● Waiting</span>`,
+        checking:   `<span class="chip blue">● Checking</span>`,
+        sending:    `<span class="chip blue">● Sending</span>`,
+        done:       `<span class="chip green">✓ Done</span>`,
+        failed:     `<span class="chip red">✗ Failed</span>`,
+        stopped:    `<span class="chip gray">■ Stopped</span>`,
+      }[q.status] || `<span class="chip gray">${q.status}</span>`;
 
-    // Chat URL display
-    const urlShort = state.chatUrl
-      ? ".../" + state.chatUrl.split("/").pop().slice(0, 16) + "..."
-      : "—";
+      // Progress calculation
+      let progress = 0;
+      let progressLabel = "";
+      if (q.limitDetectedAt && q.status === "waiting") {
+        const elapsed = (Date.now() - q.limitDetectedAt) / 60000;
+        progress = q.resetMinutes > 0
+          ? Math.min(95, (elapsed / q.resetMinutes) * 100)
+          : 95;
+        const remaining = Math.max(0, q.resetMinutes - elapsed);
+        progressLabel = `${Math.ceil(remaining)} min remaining`;
+      } else if (q.status === "done") {
+        progress = 100;
+        progressLabel = "Complete";
+      } else if (q.status === "monitoring") {
+        progressLabel = "Watching for usage limit...";
+      } else if (q.status === "checking") {
+        progressLabel = "Checking if limit has reset...";
+      }
 
-    // Elapsed time
-    const elapsedMin = state.startedAt
-      ? Math.floor((Date.now() - state.startedAt) / 60000)
-      : 0;
+      // Platform badge
+      const platformName = getDomainName(q.chatUrl);
+      let platformBadge = `<span class="chip gray">${platformName || "AI"}</span>`;
+      if (platformName === "Claude") {
+        platformBadge = `<span class="chip" style="background: rgba(249, 115, 22, 0.1); border: 1px solid rgba(249, 115, 22, 0.3); color: #f97316;">🟠 Claude</span>`;
+      } else if (platformName === "ChatGPT") {
+        platformBadge = `<span class="chip" style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); color: #10b981;">🟢 ChatGPT</span>`;
+      } else if (platformName === "Gemini") {
+        platformBadge = `<span class="chip" style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); color: #3b82f6;">🔵 Gemini</span>`;
+      } else if (platformName === "DeepSeek") {
+        platformBadge = `<span class="chip" style="background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.3); color: #8b5cf6;">🟣 DeepSeek</span>`;
+      }
 
-    el.innerHTML = `
-      <div class="status-card">
-        <div class="status-row">
-          <span class="status-label">Status</span>
-          ${statusChip}
-        </div>
-        <div class="status-row">
-          <span class="status-label">Chat</span>
-          <span class="status-value" title="${state.chatUrl}">${urlShort}</span>
-        </div>
-        <div class="status-row">
-          <span class="status-label">Attempts</span>
-          <span class="status-value">${state.attempts || 0}</span>
-        </div>
-        <div class="status-row" style="margin-bottom:0">
-          <span class="status-label">Running for</span>
-          <span class="status-value">${elapsedMin < 60 ? elapsedMin + " min" : Math.floor(elapsedMin/60) + "h " + (elapsedMin%60) + "m"}</span>
-        </div>
-        ${progressLabel ? `
-        <div class="progress-bar" style="margin-top:12px">
-          <div class="progress-fill" style="width:${progress}%"></div>
-        </div>
-        <div style="font-size:10px;color:var(--muted);margin-top:6px;font-family:'DM Mono',monospace;">
-          ${progressLabel}
-        </div>` : ""}
-      </div>
+      // Chat URL display
+      const urlShort = q.chatUrl
+        ? ".../" + q.chatUrl.split("/").pop().slice(0, 20) + "..."
+        : "—";
 
-      <div class="status-card">
-        <div class="status-row">
-          <span class="status-label">Session</span>
-          <span class="status-value" id="statusSession">—</span>
-        </div>
-        <div class="status-row" style="margin-bottom:0">
-          <span class="status-label">Weekly</span>
-          <span class="status-value" id="statusWeekly">—</span>
-        </div>
-      </div>
+      // Elapsed time
+      const elapsedMin = q.startedAt
+        ? Math.floor((Date.now() - q.startedAt) / 60000)
+        : 0;
+      const runningTime = elapsedMin < 60 ? elapsedMin + " min" : Math.floor(elapsedMin/60) + "h " + (elapsedMin%60) + "m";
 
-      <div class="status-card">
-        <div class="status-label" style="margin-bottom:8px">Resume Prompt</div>
-        <div style="font-size:12px;color:var(--text);line-height:1.6;word-break:break-word;">
-          ${escHtml(state.prompt || "—")}
+      html += `
+        <div class="status-card" style="border-left: 3px solid ${q.active ? 'var(--accent)' : 'var(--border)'}; margin-bottom: 16px;">
+          <div class="status-row">
+            ${platformBadge}
+            ${statusChip}
+          </div>
+          <div class="status-row" style="margin-top: 8px;">
+            <span class="status-label">Chat</span>
+            <span class="status-value" title="${q.chatUrl}"><a href="${q.chatUrl}" target="_blank" style="color: var(--blue); text-decoration: none;">${urlShort}</a></span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Attempts</span>
+            <span class="status-value">${q.attempts || 0}</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Running for</span>
+            <span class="status-value">${runningTime}</span>
+          </div>
+          ${progressLabel ? `
+          <div class="progress-bar" style="margin-top:8px">
+            <div class="progress-fill" style="width:${progress}%"></div>
+          </div>
+          <div style="font-size:10px;color:var(--muted);margin-top:4px;font-family:'DM Mono',monospace;display:flex;justify-content:space-between;">
+            <span>${progressLabel}</span>
+          </div>` : ""}
+          <div style="margin-top:10px; border-top: 1px solid var(--border); padding-top: 8px;">
+            <div class="status-label" style="margin-bottom:4px">Prompt</div>
+            <div style="font-size:11px;color:var(--muted);max-height:48px;overflow-y:auto;word-break:break-all;font-family:var(--font-mono);line-height:1.4;">
+              ${escHtml(q.prompt || "—")}
+            </div>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            ${q.active ? `
+              <button class="btn-stop btn-stop-queue" data-url="${escHtml(q.chatUrl)}" style="margin-top:12px; padding: 6px 12px; font-size:11px; flex: 1;">■ Stop Queue</button>
+            ` : `
+              <button class="btn-ghost btn-remove-queue" data-url="${escHtml(q.chatUrl)}" style="margin-top:12px; padding: 6px 12px; font-size:11px; flex: 1; text-align: center;">🗑 Remove History</button>
+            `}
+          </div>
         </div>
-      </div>
+      `;
+    });
 
-      ${state.active ? `<button class="btn-stop" id="btnStop2">■ Stop ChatQueue AI</button>` : ""}
-    `;
+    el.innerHTML = html;
 
-    // Re-attach stop button
-    const stop2 = $("btnStop2");
-    if (stop2) stop2.addEventListener("click", () => {
-      chrome.runtime.sendMessage({ type: "STOP_RESUME" }, () => {
-        toast("Stopped"); updateUI(); renderStatus();
-      });
+    // Attach listeners
+    el.querySelectorAll(".btn-stop-queue").forEach(btn => {
+      btn.onclick = () => {
+        const url = btn.dataset.url;
+        chrome.runtime.sendMessage({ type: "STOP_RESUME", chatUrl: url }, () => {
+          toast("✓ Queue stopped");
+          updateUI();
+          renderStatus();
+        });
+      };
+    });
+
+    el.querySelectorAll(".btn-remove-queue").forEach(btn => {
+      btn.onclick = () => {
+        const url = btn.dataset.url;
+        chrome.storage.local.get("queues", d => {
+          const queues = d.queues || {};
+          delete queues[url];
+          chrome.storage.local.set({ queues }, () => {
+            toast("✓ Queue removed from history");
+            updateUI();
+            renderStatus();
+          });
+        });
+      };
     });
 
     // Fetch live usage from the active tab if it matches
     chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
       let tab = tabs && tabs[0];
-      let hasUsage = false;
       if (tab && tab.url && ALLOWED_DOMAINS.some(d => tab.url.includes(d))) {
         fetchUsage(tab.id);
-        hasUsage = true;
-      }
-
-      if (!hasUsage && state.chatUrl) {
-        try {
-          const host = new URL(state.chatUrl).hostname;
-          chrome.tabs.query({ url: `*://${host}/*` }, allTabs => {
-            const fallbackTab = allTabs && allTabs[0];
-            if (fallbackTab) fetchUsage(fallbackTab.id);
-          });
-        } catch {}
       }
     });
 
@@ -263,15 +291,30 @@ function renderStatus() {
 
 // ── Render log tab ────────────────────────────────────────────────────
 function renderLog() {
+  const currentUrl = $("chatUrl").value.trim();
   chrome.runtime.sendMessage({ type: "GET_STATUS" }, resp => {
-    const state = resp?.state;
+    const queues = resp?.queues || {};
     const box = $("logBox");
-    if (!state || !state.log || state.log.length === 0) {
-      box.innerHTML = `<span class="log-line">No log entries yet.</span>`;
+    
+    const activeUrls = Object.keys(queues);
+    if (activeUrls.length === 0) {
+      box.innerHTML = `<span class="log-line" style="color:var(--muted)">No log entries yet.</span>`;
       return;
     }
 
-    box.innerHTML = state.log.map(line => {
+    // Use current typed URL or fallback to the first queue
+    const targetUrl = queues[currentUrl] ? currentUrl : activeUrls[0];
+    const state = queues[targetUrl];
+
+    if (!state || !state.log || state.log.length === 0) {
+      box.innerHTML = `<span class="log-line">No log entries yet for ${getDomainName(targetUrl) || "AI"}.</span>`;
+      return;
+    }
+
+    const platform = getDomainName(targetUrl) || "AI";
+    const headerHtml = `<div style="font-size: 10px; color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 8px; font-family: var(--font-heading); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Showing Logs for: ${platform}</div>`;
+
+    const logLines = state.log.map(line => {
       let cls = "";
       if (line.includes("✓") || line.includes("sent") || line.includes("Success")) cls = "success";
       else if (line.includes("⚠") || line.includes("Wait") || line.includes("Waiting")) cls = "warn";
@@ -280,7 +323,7 @@ function renderLog() {
       return `<span class="log-line ${cls}">${escHtml(line)}</span>`;
     }).join("\n");
 
-    // Scroll to bottom
+    box.innerHTML = headerHtml + logLines;
     box.scrollTop = box.scrollHeight;
   });
 }
@@ -288,33 +331,38 @@ function renderLog() {
 // ── Update overall UI state ───────────────────────────────────────────
 function updateUI() {
   chrome.runtime.sendMessage({ type: "GET_STATUS" }, resp => {
-    const state = resp?.state;
-    const pill    = document.querySelector(".status-pill");
+    const queues = resp?.queues || {};
+    const activeList = Object.values(queues).filter(q => q.active);
+    const pill    = document.getElementById("headerPill");
     const pillTxt = $("headerPillText");
     const btnStart = $("btnStart");
     const btnStop  = $("btnStop");
+    const currentUrl = $("chatUrl").value.trim();
 
-    if (!state || !state.active) {
+    if (activeList.length === 0) {
       pill.className = "status-pill idle";
       pillTxt.textContent = "Idle";
+    } else {
+      const hasChecking = activeList.some(q => q.status === "checking" || q.status === "sending");
+      const hasWaiting = activeList.some(q => q.status === "waiting");
+      if (hasChecking) {
+        pill.className = "status-pill checking";
+      } else if (hasWaiting) {
+        pill.className = "status-pill waiting";
+      } else {
+        pill.className = "status-pill active";
+      }
+      pillTxt.textContent = `${activeList.length} Active`;
+    }
+
+    const currentQueue = currentUrl ? queues[currentUrl] : null;
+    if (currentQueue && currentQueue.active) {
+      btnStart.style.display = "none";
+      btnStop.style.display = "block";
+    } else {
       btnStart.style.display = "block";
       btnStop.style.display = "none";
       btnStart.disabled = false;
-    } else {
-      pill.className = `status-pill ${state.status === "waiting" ? "waiting"
-                       : state.status === "checking" || state.status === "sending" ? "checking"
-                       : state.status === "done" ? "done"
-                       : "active"}`;
-      const labels = {
-        monitoring: "Monitoring",
-        waiting:    "Waiting",
-        checking:   "Checking",
-        sending:    "Sending",
-        done:       "Done",
-      };
-      pillTxt.textContent = labels[state.status] || state.status;
-      btnStart.style.display = "none";
-      btnStop.style.display = "block";
     }
   });
 }
@@ -388,43 +436,6 @@ function removeCustomTemplate(idx) {
     arr.splice(idx, 1);
     chrome.storage.local.set({ customTemplates: arr }, () => {
       renderTemplates();
-    });
-  });
-}
-
-function renderTemplates() {
-  const container = $("templateChips");
-  if (!container) return;
-  getTemplates(templates => {
-    container.innerHTML = templates.map((t, i) => {
-      if (t.custom) {
-        return `<span class="template-chip custom" data-idx="${i}" title="${escHtml(t.prompt)}" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;">
-          <span>${escHtml(t.name)}</span>
-          <span class="template-chip-del" data-idx="${i}" title="Delete template">✕</span>
-        </span>`;
-      } else {
-        return `<span class="template-chip" data-idx="${i}" title="${escHtml(t.prompt)}">${escHtml(t.name)}</span>`;
-      }
-    }).join("");
-
-    container.querySelectorAll(".template-chip").forEach(chip => {
-      chip.onclick = (e) => {
-        if (e.target.classList.contains("template-chip-del")) {
-          e.stopPropagation();
-          const idx = parseInt(e.target.dataset.idx);
-          const customIdx = idx - BUILTIN_TEMPLATES.length;
-          removeCustomTemplate(customIdx);
-          toast("✓ Template deleted");
-          return;
-        }
-        const idx = parseInt(chip.dataset.idx);
-        const tpl = templates[idx];
-        if (tpl) {
-          $("prompt").value = tpl.prompt;
-          updatePromptStats();
-          $("prompt").focus();
-        }
-      };
     });
   });
 }
@@ -505,10 +516,48 @@ function updateSetting(key, val) {
   });
 }
 
+// ── Render templates ──────────────────────────────────────────────────
+function renderTemplates() {
+  const container = $("templateChips");
+  if (!container) return;
+  getTemplates(templates => {
+    container.innerHTML = templates.map((t, i) => {
+      if (t.custom) {
+        return `<span class="template-chip custom" data-idx="${i}" title="${escHtml(t.prompt)}" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;">
+          <span>${escHtml(t.name)}</span>
+          <span class="template-chip-del" data-idx="${i}" title="Delete template">✕</span>
+        </span>`;
+      } else {
+        return `<span class="template-chip" data-idx="${i}" title="${escHtml(t.prompt)}">${escHtml(t.name)}</span>`;
+      }
+    }).join("");
+
+    container.querySelectorAll(".template-chip").forEach(chip => {
+      chip.onclick = (e) => {
+        if (e.target.classList.contains("template-chip-del")) {
+          e.stopPropagation();
+          const idx = parseInt(e.target.dataset.idx);
+          const customIdx = idx - BUILTIN_TEMPLATES.length;
+          removeCustomTemplate(customIdx);
+          toast("✓ Template deleted");
+          return;
+        }
+        const idx = parseInt(chip.dataset.idx);
+        const tpl = templates[idx];
+        if (tpl) {
+          $("prompt").value = tpl.prompt;
+          updatePromptStats();
+          $("prompt").focus();
+        }
+      };
+    });
+  });
+}
+
 // ── Render settings panel ─────────────────────────────────────────────
 function renderSettings() {
-  chrome.storage.local.get(["soundEnabled", "fabEnabled", "autoCaptureEnabled", "promptHistory"], d => {
-    $("chkSound").checked = d.soundEnabled !== false;
+  chrome.storage.local.get(["soundPref", "fabEnabled", "autoCaptureEnabled", "promptHistory"], d => {
+    $("selSound").value = d.soundPref || "chime";
     $("chkFab").checked = d.fabEnabled !== false;
     $("chkAutoCapture").checked = d.autoCaptureEnabled !== false;
 
@@ -548,7 +597,6 @@ function renderSettings() {
           updatePromptStats();
           saveDraft();
           toast("✓ Prompt loaded from history");
-          // Switch back to setup tab
           document.querySelector('[data-tab="setup"]').click();
         }
       };
@@ -557,7 +605,7 @@ function renderSettings() {
 }
 
 // ── Load saved settings on open ───────────────────────────────────────
-chrome.storage.local.get(["savedSettings", "autoCaptureEnabled"], ({ savedSettings, autoCaptureEnabled }) => {
+chrome.storage.local.get(["savedSettings", "autoCaptureEnabled", "soundPref"], ({ savedSettings, autoCaptureEnabled, soundPref }) => {
   if (savedSettings) {
     if (savedSettings.chatUrl)      $("chatUrl").value      = savedSettings.chatUrl;
     if (savedSettings.prompt)       $("prompt").value       = savedSettings.prompt;
@@ -566,6 +614,8 @@ chrome.storage.local.get(["savedSettings", "autoCaptureEnabled"], ({ savedSettin
     updatePromptStats();
     updatePlatformBadge();
   }
+  
+  $("selSound").value = soundPref || "chime";
   
   // If the prompt is still empty, auto-detect composer text
   if (autoCaptureEnabled !== false && !$("prompt").value.trim()) {
@@ -619,27 +669,41 @@ $("resetMinutes").addEventListener("input", saveDraft);
 $("checkInterval").addEventListener("input", saveDraft);
 $("btnSyncComposer").addEventListener("click", requestComposerText);
 
-// Settings Toggles
-$("chkSound").addEventListener("change", () => {
-  updateSetting("soundEnabled", $("chkSound").checked);
-  toast("✓ Sound alerts " + ($("chkSound").checked ? "enabled" : "disabled"));
+// Settings Listeners
+$("selSound").addEventListener("change", () => {
+  const val = $("selSound").value;
+  chrome.storage.local.set({ soundPref: val }, () => {
+    chrome.runtime.sendMessage({ type: "SET_SOUND_PREF", data: { soundPref: val } }, () => {
+      chrome.tabs.query({}, tabs => {
+        tabs.forEach(tab => {
+          if (tab.url && ALLOWED_DOMAINS.some(d => tab.url.includes(d))) {
+            chrome.tabs.sendMessage(tab.id, { type: "SETTING_CHANGED", key: "soundPref", val }, () => chrome.runtime.lastError);
+          }
+        });
+      });
+      toast("✓ Alert sound set to " + val.toUpperCase());
+    });
+  });
 });
+
 $("chkFab").addEventListener("change", () => {
   updateSetting("fabEnabled", $("chkFab").checked);
   toast("✓ Floating badge " + ($("chkFab").checked ? "enabled" : "disabled"));
 });
+
 $("chkAutoCapture").addEventListener("change", () => {
   updateSetting("autoCaptureEnabled", $("chkAutoCapture").checked);
   toast("✓ Auto-capture " + ($("chkAutoCapture").checked ? "enabled" : "disabled"));
 });
+
 $("btnClearHistory").addEventListener("click", () => {
   chrome.storage.local.set({
     promptHistory: [],
-    soundEnabled: true,
+    soundPref: "chime",
     fabEnabled: true,
     autoCaptureEnabled: true
   }, () => {
-    updateSetting("soundEnabled", true);
+    chrome.runtime.sendMessage({ type: "SET_SOUND_PREF", data: { soundPref: "chime" } });
     updateSetting("fabEnabled", true);
     updateSetting("autoCaptureEnabled", true);
     renderSettings();

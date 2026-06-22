@@ -74,8 +74,13 @@ try {
       return true;
     }
     if (msg.type === "STATE_UPDATED") {
-      renderUI(msg.state);
-      startFastPolling(msg.state);
+      const cleanUrl = (url) => { try { return new URL(url).hostname + new URL(url).pathname.replace(/\/$/, "").toLowerCase(); } catch { return url ? url.toLowerCase() : ""; } };
+      const currentClean = cleanUrl(location.href);
+      const stateClean = cleanUrl(msg.state?.chatUrl);
+      if (msg.state && (currentClean === stateClean || stateClean.startsWith(currentClean + "/"))) {
+        renderUI(msg.state);
+        startFastPolling(msg.state);
+      }
       return;
     }
     if (msg.type === "GET_RESET_INFO") {
@@ -96,10 +101,12 @@ try {
       return;
     }
     if (msg.type === "TOGGLE_CHATQUEUE") {
-      // If active, stop. Otherwise open panel for user to start.
-      safeGet("resumeState", d => {
-        if (d?.resumeState?.active) {
-          safeSend({ type: "STOP_RESUME" }, () => showToast("⏹ ChatQueue AI stopped"));
+      const url = location.href;
+      safeGet("queues", d => {
+        const queues = d?.queues || {};
+        const q = queues[url];
+        if (q?.active) {
+          safeSend({ type: "STOP_RESUME", chatUrl: url }, () => showToast("⏹ ChatQueue AI stopped"));
         } else {
           if (!panelOpen) openPanel();
           showToast("Open panel — configure and click Start");
@@ -108,9 +115,7 @@ try {
       return;
     }
     if (msg.type === "PLAY_NOTIFICATION_SOUND") {
-      safeGet("soundEnabled", d => {
-        if (d?.soundEnabled !== false) playNotificationChime();
-      });
+      playNotificationSound(msg.soundPref);
       return;
     }
     if (msg.type === "SCRAPE_CONVERSATION") {
@@ -699,27 +704,80 @@ function removeCustomTemplate(idx) {
 }
 
 // ── Notification Sound ────────────────────────────────────────────────
-function playNotificationChime() {
+function playNotificationSound(soundPref) {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     if (ctx.state === "suspended") {
       ctx.resume().catch(() => {});
     }
-    const notes = [523.25, 659.25, 783.99]; // C5, E5, G5 chord arpeggio
-    notes.forEach((freq, i) => {
+
+    if (soundPref === "beep") {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = "sine";
-      osc.frequency.setValueAtTime(freq, ctx.currentTime + i * 0.12);
-      gain.gain.setValueAtTime(0.15, ctx.currentTime + i * 0.12);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.12 + 0.5);
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
       osc.connect(gain);
       gain.connect(ctx.destination);
-      osc.start(ctx.currentTime + i * 0.12);
-      osc.stop(ctx.currentTime + i * 0.12 + 0.5);
-    });
-    setTimeout(() => ctx.close(), 2000);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.18);
+      setTimeout(() => ctx.close(), 1000);
+    } else if (soundPref === "tts") {
+      ctx.close();
+      const platform = getSiteConfig().name;
+      const utterance = new SpeechSynthesisUtterance(`Prompt sent to ${platform} successfully.`);
+      utterance.rate = 1.05;
+      utterance.pitch = 1.0;
+      window.speechSynthesis.speak(utterance);
+    } else if (soundPref === "chime" || soundPref === true) {
+      const notes = [523.25, 659.25, 783.99]; // C5, E5, G5 chord arpeggio
+      notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freq, ctx.currentTime + i * 0.12);
+        gain.gain.setValueAtTime(0.15, ctx.currentTime + i * 0.12);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.12 + 0.5);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + i * 0.12);
+        osc.stop(ctx.currentTime + i * 0.12 + 0.5);
+      });
+      setTimeout(() => ctx.close(), 2000);
+    } else {
+      ctx.close();
+    }
   } catch {}
+}
+
+function resolvePromptVariables(promptText) {
+  if (!promptText) return "";
+  let resolved = promptText;
+
+  // 1. Resolve {{date}}
+  if (resolved.includes("{{date}}")) {
+    const d = new Date();
+    const dateStr = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, '0') + "-" + String(d.getDate()).padStart(2, '0');
+    resolved = resolved.replace(/\{\{date\}\}/g, dateStr);
+  }
+
+  // 2. Resolve {{time}}
+  if (resolved.includes("{{time}}")) {
+    const d = new Date();
+    const timeStr = String(d.getHours()).padStart(2, '0') + ":" + String(d.getMinutes()).padStart(2, '0');
+    resolved = resolved.replace(/\{\{time\}\}/g, timeStr);
+  }
+
+  // 3. Resolve {{last_response}}
+  if (resolved.includes("{{last_response}}")) {
+    const msgs = scrapeConversation();
+    const lastAI = msgs.filter(m => m.role === "assistant").pop();
+    const lastRespText = lastAI ? lastAI.text : "(no previous assistant response found)";
+    resolved = resolved.replace(/\{\{last_response\}\}/g, lastRespText);
+  }
+
+  return resolved;
 }
 
 // ── Conversation Scraping & Export ─────────────────────────────────────
@@ -884,6 +942,8 @@ async function doSend(prompt) {
   const box = getInput();
   if (!box) return { sent: false, reason: "no_input" };
 
+  const finalPrompt = resolvePromptVariables(prompt);
+
   box.focus();
   await wait(300);
 
@@ -899,12 +959,12 @@ async function doSend(prompt) {
         if (box._valueTracker) {
           try { box._valueTracker.setValue(""); } catch {}
         }
-        setter.call(box, prompt);
+        setter.call(box, finalPrompt);
       } else {
-        box.value = prompt;
+        box.value = finalPrompt;
       }
     } catch {
-      box.value = prompt;
+      box.value = finalPrompt;
     }
     box.dispatchEvent(new Event("input", { bubbles: true }));
     box.dispatchEvent(new Event("change", { bubbles: true }));
@@ -913,9 +973,9 @@ async function doSend(prompt) {
     document.execCommand("selectAll", false, null);
     document.execCommand("delete", false, null);
     await wait(200);
-    const success = document.execCommand("insertText", false, prompt);
+    const success = document.execCommand("insertText", false, finalPrompt);
     if (!success || !box.innerText?.trim()) {
-      box.innerText = prompt;
+      box.innerText = finalPrompt;
       box.dispatchEvent(new Event("input", { bubbles: true }));
       box.dispatchEvent(new Event("change", { bubbles: true }));
     }
@@ -926,7 +986,7 @@ async function doSend(prompt) {
   const finalVal = (box.tagName === "TEXTAREA" || box.tagName === "INPUT") ? box.value : box.innerText;
   if (!finalVal || !finalVal.trim()) {
     const dt = new DataTransfer();
-    dt.setData("text/plain", prompt);
+    dt.setData("text/plain", finalPrompt);
     box.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true }));
     await wait(800);
   }
@@ -2155,44 +2215,45 @@ function openPanel() {
     });
   };
 
-  // ── Stop buttons
-  [p.querySelector("#ar-stop"), p.querySelector("#ar-stop2")].forEach(btn => {
-    if (btn) btn.onclick = () => {
-      safeSend({ type: "STOP_RESUME" }, () => { showToast("Stopped"); refreshStatus(); });
-    };
-  });
+    // ── Stop buttons
+    [p.querySelector("#ar-stop"), p.querySelector("#ar-stop2")].forEach(btn => {
+      if (btn) btn.onclick = () => {
+        safeSend({ type: "STOP_RESUME", chatUrl: location.href }, () => { showToast("Stopped"); refreshStatus(); });
+      };
+    });
 
-  // ── Load saved settings
-  safeGet(["savedSettings", "resumeState"], d => {
-    const sv = d.savedSettings;
-    const st = d.resumeState;
-    if (sv) {
-      if (sv.chatUrl) p.querySelector("#ar-url").value = sv.chatUrl;
-      if (sv.prompt)  {
-        p.querySelector("#ar-prompt").value = sv.prompt;
-        updatePromptStats();
+    // ── Load saved settings
+    safeGet(["savedSettings", "queues"], d => {
+      const sv = d.savedSettings;
+      const queues = d.queues || {};
+      const st = queues[location.href] || null;
+      if (sv) {
+        if (sv.chatUrl) p.querySelector("#ar-url").value = sv.chatUrl;
+        if (sv.prompt)  {
+          p.querySelector("#ar-prompt").value = sv.prompt;
+          updatePromptStats();
+        }
+        if (sv.checkInterval) p.querySelector("#ar-interval").value = sv.checkInterval;
+        if (!resetInfo && sv.resetMinutes) p.querySelector("#ar-mins").value = sv.resetMinutes;
       }
-      if (sv.checkInterval) p.querySelector("#ar-interval").value = sv.checkInterval;
-      if (!resetInfo && sv.resetMinutes) p.querySelector("#ar-mins").value = sv.resetMinutes;
-    }
-    const isChatPage = ["claude.ai", "chatgpt.com", "gemini.google.com", "deepseek.com"].some(d => location.href.includes(d));
-    if (!p.querySelector("#ar-url").value && isChatPage) {
-      p.querySelector("#ar-url").value = location.href;
-      handlePanelInput();
-    }
-    
-    // Auto-detect composer text if prompt is empty and autoCaptureEnabled !== false
-    if (autoCaptureEnabled !== false && promptTa && !promptTa.value.trim()) {
-      const text = getAIComposerText();
-      if (text) {
-        promptTa.value = text;
-        updatePromptStats();
+      const isChatPage = ["claude.ai", "chatgpt.com", "gemini.google.com", "deepseek.com"].some(d => location.href.includes(d));
+      if (!p.querySelector("#ar-url").value && isChatPage) {
+        p.querySelector("#ar-url").value = location.href;
         handlePanelInput();
       }
-    }
-    
-    if (st) renderUI(st);
-  });
+      
+      // Auto-detect composer text if prompt is empty and autoCaptureEnabled !== false
+      if (autoCaptureEnabled !== false && promptTa && !promptTa.value.trim()) {
+        const text = getAIComposerText();
+        if (text) {
+          promptTa.value = text;
+          updatePromptStats();
+          handlePanelInput();
+        }
+      }
+      
+      if (st) renderUI(st);
+    });
 
   // ── Poll every 4s to refresh status + log
   if (pollInterval) clearInterval(pollInterval);
@@ -2225,16 +2286,19 @@ function outsideClickH(e) {
 
 // ── Refresh status tab ────────────────────────────────────────────────
 function refreshStatus() {
-  safeGet("resumeState", d => {
-    if (d?.resumeState) renderUI(d.resumeState);
+  safeGet("queues", d => {
+    const queues = d?.queues || {};
+    const st = queues[location.href];
+    if (st) renderUI(st);
   });
 }
 
 function refreshLog() {
-  safeGet("resumeState", d => {
+  safeGet("queues", d => {
     const el = document.getElementById("ar-log");
     if (!el) return;
-    const log = d?.resumeState?.log;
+    const queues = d?.queues || {};
+    const log = queues[location.href]?.log;
     if (!log || log.length === 0) { el.textContent = "No log entries yet."; return; }
     el.innerHTML = log.map(line => {
       let cls = "";
@@ -2424,8 +2488,9 @@ function startFastPolling(state) {
       return;
     }
     
-    safeGet("resumeState", d => {
-      const s = d.resumeState;
+    safeGet("queues", d => {
+      const queues = d?.queues || {};
+      const s = queues[location.href];
       if (!s || !s.active || s.status === "done" || s.status === "failed") {
         clearInterval(fastCheckInterval);
         return;
@@ -2450,7 +2515,10 @@ function executeLocalSend(state) {
     } else {
       safeSend({ type: "LOCAL_SEND_FAILED", reason: result ? result.reason : "unknown" });
       setTimeout(() => {
-        safeGet("resumeState", d => startFastPolling(d?.resumeState));
+        safeGet("queues", d => {
+          const queues = d?.queues || {};
+          startFastPolling(queues[location.href]);
+        });
       }, 5000);
     }
   });
@@ -2618,10 +2686,12 @@ function boot() {
   if (shouldShowBtn()) {
     injectBtn();
   }
-  safeGet("resumeState", d => {
-    if (d?.resumeState?.active) {
-      updateBtn(d.resumeState);
-      startFastPolling(d.resumeState);
+  safeGet("queues", d => {
+    const queues = d?.queues || {};
+    const st = queues[location.href];
+    if (st?.active) {
+      updateBtn(st);
+      startFastPolling(st);
     }
   });
 }
