@@ -7,6 +7,16 @@ let usageFetchInterval = null;
 let fabEnabled = true;
 let autoCaptureEnabled = true;
 
+function cleanUrlForComparison(urlStr) {
+  try {
+    const u = new URL(urlStr);
+    let path = u.pathname.replace(/\/$/, "").toLowerCase();
+    return u.hostname.toLowerCase() + path;
+  } catch {
+    return urlStr ? urlStr.toLowerCase() : "";
+  }
+}
+
 try {
   chrome.storage.local.get(["fabEnabled", "autoCaptureEnabled"], d => {
     if (d) {
@@ -75,10 +85,9 @@ try {
       return true;
     }
     if (msg.type === "STATE_UPDATED") {
-      const cleanUrl = (url) => { try { return new URL(url).hostname + new URL(url).pathname.replace(/\/$/, "").toLowerCase(); } catch { return url ? url.toLowerCase() : ""; } };
-      const currentClean = cleanUrl(location.href);
-      const stateClean = cleanUrl(msg.state?.chatUrl);
-      if (msg.state && (currentClean === stateClean || stateClean.startsWith(currentClean + "/"))) {
+      const currentClean = cleanUrlForComparison(location.href);
+      const stateClean = cleanUrlForComparison(msg.state?.chatUrl);
+      if (msg.state && currentClean === stateClean) {
         renderUI(msg.state);
         startFastPolling(msg.state);
       }
@@ -105,9 +114,16 @@ try {
       const url = location.href;
       safeGet("queues", d => {
         const queues = d?.queues || {};
-        const q = queues[url];
+        const currentClean = cleanUrlForComparison(url);
+        let q = null;
+        for (const qUrl in queues) {
+          if (cleanUrlForComparison(qUrl) === currentClean) {
+            q = queues[qUrl];
+            break;
+          }
+        }
         if (q?.active) {
-          safeSend({ type: "STOP_RESUME", chatUrl: url }, () => showToast("⏹ ChatQueue AI stopped"));
+          safeSend({ type: "STOP_RESUME", chatUrl: q.chatUrl }, () => showToast("⏹ ChatQueue AI stopped"));
         } else {
           if (!panelOpen) openPanel();
           showToast("Open panel — configure and click Start");
@@ -2227,7 +2243,14 @@ function openPanel() {
     safeGet(["savedSettings", "queues"], d => {
       const sv = d.savedSettings;
       const queues = d.queues || {};
-      const st = queues[location.href] || null;
+      const currentClean = cleanUrlForComparison(location.href);
+      let st = null;
+      for (const qUrl in queues) {
+        if (cleanUrlForComparison(qUrl) === currentClean) {
+          st = queues[qUrl];
+          break;
+        }
+      }
       if (sv) {
         if (sv.chatUrl) p.querySelector("#ar-url").value = sv.chatUrl;
         if (sv.prompt)  {
@@ -2289,7 +2312,14 @@ function outsideClickH(e) {
 function refreshStatus() {
   safeGet("queues", d => {
     const queues = d?.queues || {};
-    const st = queues[location.href];
+    const currentClean = cleanUrlForComparison(location.href);
+    let st = null;
+    for (const qUrl in queues) {
+      if (cleanUrlForComparison(qUrl) === currentClean) {
+        st = queues[qUrl];
+        break;
+      }
+    }
     if (st) renderUI(st);
   });
 }
@@ -2299,7 +2329,14 @@ function refreshLog() {
     const el = document.getElementById("ar-log");
     if (!el) return;
     const queues = d?.queues || {};
-    const log = queues[location.href]?.log;
+    const currentClean = cleanUrlForComparison(location.href);
+    let log = null;
+    for (const qUrl in queues) {
+      if (cleanUrlForComparison(qUrl) === currentClean) {
+        log = queues[qUrl]?.log;
+        break;
+      }
+    }
     if (!log || log.length === 0) { el.textContent = "No log entries yet."; return; }
     el.innerHTML = log.map(line => {
       let cls = "";
@@ -2523,7 +2560,14 @@ function startFastPolling(state) {
     
     safeGet("queues", d => {
       const queues = d?.queues || {};
-      const s = queues[location.href];
+      const currentClean = cleanUrlForComparison(location.href);
+      let s = null;
+      for (const qUrl in queues) {
+        if (cleanUrlForComparison(qUrl) === currentClean) {
+          s = queues[qUrl];
+          break;
+        }
+      }
       if (!s || !s.active || s.status === "done" || s.status === "failed") {
         clearInterval(fastCheckInterval);
         maintainKeepAlivePort(false);
@@ -2552,7 +2596,15 @@ function executeLocalSend(state) {
       setTimeout(() => {
         safeGet("queues", d => {
           const queues = d?.queues || {};
-          startFastPolling(queues[location.href]);
+          const currentClean = cleanUrlForComparison(location.href);
+          let s = null;
+          for (const qUrl in queues) {
+            if (cleanUrlForComparison(qUrl) === currentClean) {
+              s = queues[qUrl];
+              break;
+            }
+          }
+          if (s) startFastPolling(s);
         });
       }, 5000);
     }
@@ -2687,6 +2739,79 @@ const mutObs = new MutationObserver(() => {
 });
 try { mutObs.observe(document.body, { childList: true, subtree: true }); } catch {}
 
+let lastCheckedUrl = "";
+
+function stopFastPollingLocal() {
+  if (fastCheckInterval) {
+    clearInterval(fastCheckInterval);
+    fastCheckInterval = null;
+  }
+}
+
+function resetUiToDefault() {
+  updateBtn(null);
+  updateSetupBtns(null);
+  const p = document.getElementById("ar-panel");
+  if (p) {
+    const sct  = p.querySelector("#ar-sc-title");
+    const scd  = p.querySelector("#ar-sc-desc");
+    const sc   = p.querySelector("#ar-sc");
+    if (sct) sct.textContent = "Idle";
+    if (scd) scd.textContent = "No active queue session on this chat thread.";
+    if (sc) sc.className = "ar-sc";
+    
+    const prog = p.querySelector("#ar-prog");
+    if (prog) prog.style.display = "none";
+    
+    const stop2 = p.querySelector("#ar-stop2");
+    if (stop2) stop2.style.display = "none";
+  }
+}
+
+function handleUrlChange(url) {
+  if (!isCtxValid()) return;
+  
+  const urlInput = document.querySelector("#ar-url");
+  if (urlInput) {
+    urlInput.value = url;
+    const promptTa = document.querySelector("#ar-prompt");
+    const minsInp = document.querySelector("#ar-mins");
+    const intInp = document.querySelector("#ar-interval");
+    const pr = promptTa ? promptTa.value : "";
+    const mi = minsInp ? parseInt(minsInp.value) || 0 : 0;
+    const it = intInp ? parseInt(intInp.value) || 60 : 60;
+    autoSaveDraft(pr, url, mi, it);
+  }
+
+  safeGet("queues", d => {
+    const queues = d?.queues || {};
+    const currentClean = cleanUrlForComparison(url);
+    
+    let matchedState = null;
+    for (const qUrl in queues) {
+      if (cleanUrlForComparison(qUrl) === currentClean) {
+        matchedState = queues[qUrl];
+        break;
+      }
+    }
+
+    if (matchedState) {
+      renderUI(matchedState);
+      if (matchedState.active) {
+        startFastPolling(matchedState);
+        maintainKeepAlivePort(true);
+      } else {
+        stopFastPollingLocal();
+        maintainKeepAlivePort(false);
+      }
+    } else {
+      resetUiToDefault();
+      stopFastPollingLocal();
+      maintainKeepAlivePort(false);
+    }
+  });
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────
 function boot() {
   injectStyles();
@@ -2695,6 +2820,13 @@ function boot() {
   clearInterval(btnCheckInterval);
   btnCheckInterval = setInterval(() => {
     if (!isCtxValid()) { clearInterval(btnCheckInterval); return; }
+    
+    const currentUrl = location.href;
+    if (currentUrl !== lastCheckedUrl) {
+      lastCheckedUrl = currentUrl;
+      handleUrlChange(currentUrl);
+    }
+
     if (!shouldShowBtn()) {
       document.getElementById("ar-btn")?.remove();
       closePanel();
@@ -2721,17 +2853,10 @@ function boot() {
   if (shouldShowBtn()) {
     injectBtn();
   }
-  safeGet("queues", d => {
-    const queues = d?.queues || {};
-    const st = queues[location.href];
-    if (st?.active) {
-      updateBtn(st);
-      startFastPolling(st);
-      maintainKeepAlivePort(true);
-    } else {
-      maintainKeepAlivePort(false);
-    }
-  });
+  
+  // Instant URL initialization
+  lastCheckedUrl = location.href;
+  handleUrlChange(lastCheckedUrl);
 }
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
 else boot();
