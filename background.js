@@ -590,8 +590,18 @@ function updateBadge(queues) {
   chrome.action.setBadgeBackgroundColor({ color: "#d946ef" });
 }
 
+chrome.runtime.onConnect.addListener(port => {
+  if (port.name === "chatqueue-keepalive") {
+    port.onDisconnect.addListener(() => {});
+  }
+});
+
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.set({ queues: {} });
+  chrome.storage.local.get("queues", d => {
+    if (!d.queues) {
+      chrome.storage.local.set({ queues: {} });
+    }
+  });
   updateBadge({});
 });
 

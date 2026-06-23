@@ -53,6 +53,7 @@ function selfDestruct() {
   try { clearInterval(btnCheckInterval); } catch {}
   try { clearInterval(usageFetchInterval); } catch {}
   try { clearInterval(fastCheckInterval); } catch {}
+  try { maintainKeepAlivePort(false); } catch {}
   try { document.getElementById("ar-btn")?.remove(); } catch {}
   try { document.getElementById("ar-panel")?.remove(); } catch {}
   try { document.getElementById("ar-styles")?.remove(); } catch {}
@@ -2476,15 +2477,47 @@ function escH(s) {
 
 
 
+let keepAlivePort = null;
+function maintainKeepAlivePort(isActive) {
+  if (isActive) {
+    if (!keepAlivePort && isCtxValid()) {
+      try {
+        keepAlivePort = chrome.runtime.connect({ name: "chatqueue-keepalive" });
+        keepAlivePort.onDisconnect.addListener(() => {
+          keepAlivePort = null;
+          setTimeout(() => {
+            safeGet("queues", d => {
+              const queues = d?.queues || {};
+              const s = queues[location.href];
+              if (s?.active) maintainKeepAlivePort(true);
+            });
+          }, 5000);
+        });
+      } catch {}
+    }
+  } else {
+    if (keepAlivePort) {
+      try { keepAlivePort.disconnect(); } catch {}
+      keepAlivePort = null;
+    }
+  }
+}
+
 let fastCheckInterval = null;
 
 function startFastPolling(state) {
   if (fastCheckInterval) clearInterval(fastCheckInterval);
-  if (!state || !state.active || state.status === "done" || state.status === "failed") return;
+  if (!state || !state.active || state.status === "done" || state.status === "failed") {
+    maintainKeepAlivePort(false);
+    return;
+  }
+
+  maintainKeepAlivePort(true);
 
   fastCheckInterval = setInterval(() => {
     if (!isCtxValid()) {
       clearInterval(fastCheckInterval);
+      maintainKeepAlivePort(false);
       return;
     }
     
@@ -2493,12 +2526,14 @@ function startFastPolling(state) {
       const s = queues[location.href];
       if (!s || !s.active || s.status === "done" || s.status === "failed") {
         clearInterval(fastCheckInterval);
+        maintainKeepAlivePort(false);
         return;
       }
       
       if (s.status === "checking" || s.status === "monitoring" || s.status === "waiting") {
         if (canSend()) {
           clearInterval(fastCheckInterval);
+          maintainKeepAlivePort(false);
           executeLocalSend(s);
         }
       }
@@ -2692,6 +2727,9 @@ function boot() {
     if (st?.active) {
       updateBtn(st);
       startFastPolling(st);
+      maintainKeepAlivePort(true);
+    } else {
+      maintainKeepAlivePort(false);
     }
   });
 }
