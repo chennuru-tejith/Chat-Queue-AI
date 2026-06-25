@@ -593,6 +593,142 @@
     margin-right: 8px;
     color: var(--text);
   }
+
+  /* Theme overrides */
+  body.theme-cyberpunk {
+    --bg: #0b0914;
+    --surface: rgba(13, 11, 26, 0.65);
+    --surface-solid: #0d0b1a;
+    --border: rgba(0, 240, 255, 0.15);
+    --border-glow: rgba(0, 240, 255, 0.25);
+    --accent: #00f0ff;
+    --accent-glow: rgba(0, 240, 255, 0.4);
+    --accent2: #ff007f;
+    --accent2-glow: rgba(255, 0, 127, 0.4);
+    background: radial-gradient(circle at 50% 0%, rgba(255, 0, 127, 0.15) 0%, rgba(11, 9, 20, 1) 85%), var(--bg);
+  }
+  body.theme-cyberpunk .logo-icon {
+    box-shadow: 0 0 16px var(--accent-glow);
+  }
+
+  body.theme-light {
+    --bg: #f3f4f6;
+    --surface: rgba(255, 255, 255, 0.85);
+    --surface-solid: #ffffff;
+    --surface-hover: rgba(0, 0, 0, 0.04);
+    --border: rgba(0, 0, 0, 0.08);
+    --border-glow: rgba(124, 58, 237, 0.15);
+    --text: #1f2937;
+    --muted: #6b7280;
+    --accent: #7c3aed;
+    --accent-glow: rgba(124, 58, 237, 0.2);
+    --accent2: #db2777;
+    --accent2-glow: rgba(219, 39, 119, 0.2);
+    background: radial-gradient(circle at 50% 0%, rgba(219, 39, 119, 0.08) 0%, rgba(243, 244, 246, 1) 85%), var(--bg);
+  }
+  body.theme-light .logo-text { color: #111827; }
+  body.theme-light input[type="text"], body.theme-light input[type="number"], body.theme-light textarea {
+    color: #1f2937;
+  }
+  body.theme-light .btn-ghost { color: #374151; }
+
+  body.theme-emerald {
+    --bg: #020804;
+    --surface: rgba(4, 20, 8, 0.45);
+    --surface-solid: #031406;
+    --border: rgba(16, 185, 129, 0.12);
+    --border-glow: rgba(16, 185, 129, 0.22);
+    --accent: #10b981;
+    --accent-glow: rgba(16, 185, 129, 0.35);
+    --accent2: #06b6d4;
+    --accent2-glow: rgba(6, 182, 212, 0.35);
+    background: radial-gradient(circle at 50% 0%, rgba(6, 182, 212, 0.16) 0%, rgba(2, 8, 4, 1) 85%), var(--bg);
+  }
+
+  /* Queue Dashboard cards */
+  .queue-list { display: flex; flex-direction: column; gap: 12px; }
+  .queue-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    position: relative;
+    backdrop-filter: blur(12px);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .queue-card:hover {
+    border-color: var(--accent2);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3), 0 0 10px var(--accent2-glow);
+  }
+  .queue-card-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+  }
+  .queue-card-actions button {
+    flex: 1;
+    padding: 6px 8px;
+    font-size: 10.5px;
+    font-weight: 600;
+  }
+  .queue-card-log-trigger {
+    font-size: 10px;
+    color: var(--muted);
+    cursor: pointer;
+    text-align: center;
+    margin-top: 8px;
+    display: block;
+    user-select: none;
+  }
+  .queue-card-log-trigger:hover { color: var(--text); }
+  .queue-card-log-preview {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--muted);
+    background: rgba(0,0,0,0.25);
+    border-radius: var(--radius-sm);
+    padding: 6px 8px;
+    margin-top: 6px;
+    display: none;
+    line-height: 1.6;
+    max-height: 80px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+  }
+
+  /* Analytics layout & chart */
+  .analytics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+  .metric-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    text-align: center;
+  }
+  .metric-value {
+    font-family: var(--font-heading);
+    font-size: 20px;
+    font-weight: 700;
+    color: #ffffff;
+    margin-top: 4px;
+  }
+  body.theme-light .metric-value { color: #111827; }
+  .chart-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    backdrop-filter: blur(12px);
+  }
+  .chart-title {
+    font-family: var(--font-heading);
+    font-size: 11px;
+    color: var(--text);
+    margin-bottom: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
   .history-date {
     color: var(--muted);
     font-family: var(--font-mono);
@@ -620,7 +756,8 @@
 <!-- Tabs -->
 <div class="tabs">
   <div class="tab active" data-tab="setup">Setup</div>
-  <div class="tab" data-tab="status">Status</div>
+  <div class="tab" data-tab="status">Queues</div>
+  <div class="tab" data-tab="analytics">Analytics</div>
   <div class="tab" data-tab="log">Log</div>
   <div class="tab" data-tab="settings">Settings</div>
 </div>
@@ -678,10 +815,41 @@
 
 <!-- ── STATUS TAB ────────────────────────────────────────────────── -->
 <div class="panel" id="tab-status">
-  <div id="statusContent">
+  <div id="statusUsageContainer" style="display:none; margin-bottom:12px; padding:10px 12px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm); font-size:11.5px; backdrop-filter:blur(8px);">
+    <div style="font-size: 10px; color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 4px; margin-bottom: 6px; font-family: var(--font-heading); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Live Usage (Active Tab)</div>
+    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+      <span style="color:var(--muted)">Session Usage:</span>
+      <span id="statusSession" style="font-weight:600">—</span>
+    </div>
+    <div style="display:flex; justify-content:space-between;">
+      <span style="color:var(--muted)">Weekly Usage:</span>
+      <span id="statusWeekly" style="font-weight:600">—</span>
+    </div>
+  </div>
+  <div class="queue-list" id="queueList">
     <div class="empty-state">
       <div class="empty-icon">🕒</div>
-      <div class="empty-text">No active session.<br>Go to Setup and click Start.</div>
+      <div class="empty-text">No active queues.<br>Go to Setup and click Start.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── ANALYTICS TAB ────────────────────────────────────────────── -->
+<div class="panel" id="tab-analytics">
+  <div class="analytics-grid">
+    <div class="metric-card">
+      <label style="margin:0;">Total Prompts Sent</label>
+      <div class="metric-value" id="valTotalSends">0</div>
+    </div>
+    <div class="metric-card">
+      <label style="margin:0;">Usage Limit Hits</label>
+      <div class="metric-value" id="valLimitHits">0</div>
+    </div>
+  </div>
+  <div class="chart-container">
+    <div class="chart-title">Usage Level History</div>
+    <div id="chartSvgContainer" style="width:100%; height:130px; display:flex; align-items:center; justify-content:center;">
+      <span style="color:var(--muted); font-size:11px;">Insufficient history data</span>
     </div>
   </div>
 </div>
@@ -703,11 +871,38 @@
         <span style="font-weight: 500; font-size: 12px;">Sound Alerts</span>
         <span style="color: var(--muted); font-size: 10px;">Select alert type on prompt send</span>
       </div>
-      <select id="selSound" style="background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); border-radius: var(--radius-sm); color: #e5e7eb; font-size: 12px; padding: 4px 8px; outline: none; cursor: pointer; font-family: var(--font-body); max-width: 110px;">
-        <option value="chime" style="background-color: var(--surface-solid); color: var(--text);">Chime</option>
-        <option value="beep" style="background-color: var(--surface-solid); color: var(--text);">Beep</option>
-        <option value="tts" style="background-color: var(--surface-solid); color: var(--text);">TTS Voice</option>
-        <option value="none" style="background-color: var(--surface-solid); color: var(--text);">None</option>
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <select id="selSound" style="background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); border-radius: var(--radius-sm); color: #e5e7eb; font-size: 12px; padding: 4px 8px; outline: none; cursor: pointer; font-family: var(--font-body); max-width: 110px;">
+          <option value="chime" style="background-color: var(--surface-solid); color: var(--text);">Chime</option>
+          <option value="beep" style="background-color: var(--surface-solid); color: var(--text);">Beep</option>
+          <option value="tts" style="background-color: var(--surface-solid); color: var(--text);">TTS Voice</option>
+          <option value="none" style="background-color: var(--surface-solid); color: var(--text);">None</option>
+        </select>
+        <button class="btn-ghost" id="btnPlaySoundPreview" title="Play sound preview" style="padding: 4px 8px; font-size: 11px; height: 26px; display: inline-flex; align-items: center; justify-content: center;">▶</button>
+      </div>
+    </div>
+
+    <!-- TTS Voice selector (visible only when TTS is selected) -->
+    <div id="rowTtsVoice" style="display: none; justify-content: space-between; align-items: center; padding: 10px 12px; background: var(--surface); border-radius: var(--radius-sm); border: 1px solid var(--border); margin-bottom: 10px; backdrop-filter: blur(8px);">
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <span style="font-weight: 500; font-size: 12px;">TTS Voice Accent</span>
+        <span style="color: var(--muted); font-size: 10px;">Choose speaker language/voice</span>
+      </div>
+      <select id="selTtsVoice" style="background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); border-radius: var(--radius-sm); color: #e5e7eb; font-size: 11px; padding: 4px 8px; outline: none; cursor: pointer; font-family: var(--font-body); max-width: 150px;">
+        <!-- Loaded dynamically -->
+      </select>
+    </div>
+
+    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: var(--surface); border-radius: var(--radius-sm); border: 1px solid var(--border); margin-bottom: 10px; backdrop-filter: blur(8px);">
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <span style="font-weight: 500; font-size: 12px;">Visual Theme</span>
+        <span style="color: var(--muted); font-size: 10px;">Choose extension popup visual style</span>
+      </div>
+      <select id="selTheme" style="background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); border-radius: var(--radius-sm); color: #e5e7eb; font-size: 12px; padding: 4px 8px; outline: none; cursor: pointer; font-family: var(--font-body); max-width: 120px;">
+        <option value="default" style="background-color: var(--surface-solid); color: var(--text);">Purple Dark</option>
+        <option value="cyberpunk" style="background-color: var(--surface-solid); color: var(--text);">Cyberpunk</option>
+        <option value="light" style="background-color: var(--surface-solid); color: var(--text);">Light Clean</option>
+        <option value="emerald" style="background-color: var(--surface-solid); color: var(--text);">Emerald Mint</option>
       </select>
     </div>
 

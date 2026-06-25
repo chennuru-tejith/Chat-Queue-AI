@@ -49,6 +49,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       {
         const chatUrl = msg.chatUrl || sender.tab?.url;
         if (chatUrl) {
+          incrementStat("stats_totalSends");
           updateState(chatUrl, s => { s.status = "done"; s.active = false; return s; },
             `✓ Prompt sent successfully via in-page instant checker! (${msg.method || "ok"})`);
           chrome.alarms.clear(ALARM);
@@ -86,6 +87,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true });
         return false; // synchronous
       }
+    case "RECORD_USAGE":
+      chrome.storage.local.get("usageHistory", d => {
+        let history = d.usageHistory || [];
+        history.push({ t: Date.now(), s: msg.data.session, w: msg.data.weekly });
+        if (history.length > 50) history.shift();
+        chrome.storage.local.set({ usageHistory: history });
+      });
+      sendResponse({ ok: true });
+      return false; // synchronous
+    case "FORCE_SEND":
+      forceSend(msg.chatUrl);
+      sendResponse({ ok: true });
+      return false; // synchronous
+    case "RELOAD_QUEUE_TAB":
+      reloadQueueTab(msg.chatUrl);
+      sendResponse({ ok: true });
+      return false; // synchronous
     default:
       return false; // Unhandled type: do not return true to prevent port leaks
   }
@@ -312,6 +330,7 @@ function onLimitDetected(chatUrl, detectedMins) {
     s.status = "waiting";
     s.resetMinutes = minsToWait;
     s.log.push(`[${ts()}] Usage limit detected! Waiting ${minsToWait} min before checking...`);
+    incrementStat("stats_limitHits");
 
     chrome.storage.local.set({ queues }, () => {
       broadcast(s);
@@ -426,6 +445,7 @@ function attemptSend(state) {
                 }
 
                 if (result.sent) {
+                  incrementStat("stats_totalSends");
                   addLog(chatUrl, `✓ Prompt sent successfully! (${result.method || "ok"})`);
                   updateState(chatUrl, s => { s.status = "done"; s.active = false; return s; });
 
@@ -674,4 +694,94 @@ function scheduleFastBackgroundCheck(chatUrl, ms) {
       }
     });
   }, ms);
+}
+
+function incrementStat(key) {
+  chrome.storage.local.get(key, d => {
+    const val = (d[key] || 0) + 1;
+    chrome.storage.local.set({ [key]: val });
+  });
+}
+
+function forceSend(chatUrl) {
+  if (!chatUrl) return;
+  chrome.storage.local.get("queues", d => {
+    const queues = d.queues || {};
+    const s = queues[chatUrl];
+    if (!s) return;
+    
+    updateState(chatUrl, state => { state.status = "sending"; return state; }, "Force send requested by user...");
+    
+    findOrOpenTab(chatUrl, (tabId, wasCreated) => {
+      if (!tabId) {
+        addLog(chatUrl, "Could not find/open tab for force send.");
+        return;
+      }
+      
+      const sendAction = () => {
+        chrome.storage.local.get("soundPref", sp => {
+          const sound = sp.soundPref || "chime";
+          chrome.tabs.sendMessage(tabId, {
+            type: "CHECK_AND_SEND",
+            prompt: s.prompt,
+            soundPref: sound,
+            force: true
+          }, result => {
+            if (chrome.runtime.lastError || !result) {
+              addLog(chatUrl, "Force send failed: tab unresponsive.");
+              updateState(chatUrl, state => { state.status = "checking"; return state; });
+              return;
+            }
+            if (result.sent) {
+              incrementStat("stats_totalSends");
+              addLog(chatUrl, `✓ Prompt sent via Force Send!`);
+              updateState(chatUrl, state => { state.status = "done"; state.active = false; return state; });
+              
+              const alarmName = "ar-wait-end|" + chatUrl;
+              chrome.alarms.clear(alarmName);
+              
+              chrome.notifications.create({
+                type: "basic",
+                iconUrl: "icons/icon48.png",
+                title: "ChatQueue AI ✓",
+                message: "Your prompt was force sent!"
+              });
+              if (sound !== "none") {
+                chrome.tabs.sendMessage(tabId, { type: "PLAY_NOTIFICATION_SOUND", soundPref: sound }, () => chrome.runtime.lastError);
+              }
+              chrome.tabs.update(tabId, { active: true });
+            } else {
+              addLog(chatUrl, `Force send failed: ${result.reason || "unknown"}.`);
+              updateState(chatUrl, state => { state.status = "checking"; return state; });
+            }
+          });
+        });
+      };
+      
+      if (wasCreated) {
+        ensureTabReady(tabId, ready => {
+          if (!ready) {
+            addLog(chatUrl, "Tab load timed out for force send.");
+            return;
+          }
+          setTimeout(sendAction, 3500);
+        });
+      } else {
+        sendAction();
+      }
+    });
+  });
+}
+
+function reloadQueueTab(chatUrl) {
+  if (!chatUrl) return;
+  findOrOpenTab(chatUrl, (tabId, wasCreated) => {
+    if (tabId && !wasCreated) {
+      chrome.tabs.reload(tabId, { bypassCache: true }, () => {
+        addLog(chatUrl, "Tab manually reloaded by user.");
+      });
+    } else {
+      addLog(chatUrl, "Opening tab to load/reload...");
+    }
+  });
 }

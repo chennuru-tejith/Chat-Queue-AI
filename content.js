@@ -81,7 +81,7 @@ try {
       return;
     }
     if (msg.type === "CHECK_AND_SEND") {
-      doSend(msg.prompt).then(sendResponse);
+      doSend(msg.prompt, msg.force).then(sendResponse);
       return true;
     }
     if (msg.type === "STATE_UPDATED") {
@@ -487,6 +487,13 @@ async function runPeriodicUsageFetch() {
   if (data) {
     latestUsageData = data;
     updateUsageBarOnPage();
+    safeSend({
+      type: "RECORD_USAGE",
+      data: {
+        session: data.session ? data.session.pct : null,
+        weekly: data.weekly ? data.weekly.pct : null
+      }
+    });
     // Refresh setup/status UI if panel is open
     const activeTab = document.querySelector(".ar-tab.active")?.dataset?.tab;
     if (activeTab === "status") {
@@ -505,7 +512,7 @@ function isLimitActive() {
   }
 }
 
-function canSend() {
+function canSend(ignoreLimit = false) {
   try {
     const input = getInput();
     if (!input) return false;
@@ -517,7 +524,7 @@ function canSend() {
     }
     const style = window.getComputedStyle(input);
     if (style.pointerEvents === "none") return false;
-    if (isLimitActive()) return false;
+    if (!ignoreLimit && isLimitActive()) return false;
     return true;
   } catch {
     return false;
@@ -962,9 +969,9 @@ function autoSaveDraft(prompt, url, mins, interval) {
 }
 
 // ── Send prompt ───────────────────────────────────────────────────────
-async function doSend(prompt) {
+async function doSend(prompt, force = false) {
   const wait = ms => new Promise(r => setTimeout(r, ms));
-  if (!canSend()) return { sent: false, reason: isLimitActive() ? "still_limited" : "not_ready" };
+  if (!canSend(force)) return { sent: false, reason: isLimitActive() ? "still_limited" : "not_ready" };
 
   const box = getInput();
   if (!box) return { sent: false, reason: "no_input" };

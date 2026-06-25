@@ -10,6 +10,7 @@ document.querySelectorAll(".tab").forEach(tab => {
     tab.classList.add("active");
     $(`tab-${tab.dataset.tab}`).classList.add("active");
     if (tab.dataset.tab === "status") renderStatus();
+    if (tab.dataset.tab === "analytics") renderAnalytics();
     if (tab.dataset.tab === "log") renderLog();
     if (tab.dataset.tab === "settings") renderSettings();
   });
@@ -26,6 +27,16 @@ function getDomainName(url) {
     if (hostname.includes("deepseek.com")) return "DeepSeek";
   } catch {}
   return "";
+}
+
+function cleanUrlForComparison(urlStr) {
+  try {
+    const u = new URL(urlStr);
+    let path = u.pathname.replace(/\/$/, "").toLowerCase();
+    return u.hostname.toLowerCase() + path;
+  } catch {
+    return urlStr ? urlStr.toLowerCase() : "";
+  }
 }
 
 // ── Use current tab button ────────────────────────────────────────────
@@ -106,16 +117,20 @@ $("btnStop").addEventListener("click", () => {
 
 // ── Render status tab ─────────────────────────────────────────────────
 function renderStatus() {
+  const container = $("statusUsageContainer");
+  if (container) container.style.display = "none";
+
   chrome.runtime.sendMessage({ type: "GET_STATUS" }, resp => {
     const queues = resp?.queues || {};
-    const el = $("statusContent");
+    const el = $("queueList");
+    if (!el) return;
 
     const queueList = Object.values(queues);
     if (queueList.length === 0) {
       el.innerHTML = `
         <div class="empty-state">
           <div class="empty-icon">🕒</div>
-          <div class="empty-text">No active session.<br>Go to Setup and click Start.</div>
+          <div class="empty-text">No active queues.<br>Go to Setup and click Start.</div>
         </div>`;
       return;
     }
@@ -213,12 +228,22 @@ function renderStatus() {
               ${escHtml(q.prompt || "—")}
             </div>
           </div>
-          <div style="display: flex; gap: 8px;">
+          
+          <div class="queue-card-actions" style="display: flex; gap: 6px; margin-top: 12px;">
             ${q.active ? `
-              <button class="btn-stop btn-stop-queue" data-url="${escHtml(q.chatUrl)}" style="margin-top:12px; padding: 6px 12px; font-size:11px; flex: 1;">■ Stop Queue</button>
+              <button class="btn-ghost btn-focus-tab" data-url="${escHtml(q.chatUrl)}" style="padding: 6px; font-size: 10.5px; flex: 1;">🔍 Focus</button>
+              <button class="btn-ghost btn-force-send" data-url="${escHtml(q.chatUrl)}" style="padding: 6px; font-size: 10.5px; flex: 1; color: var(--accent);">⚡ Force</button>
+              <button class="btn-ghost btn-reload-tab" data-url="${escHtml(q.chatUrl)}" style="padding: 6px; font-size: 10.5px; flex: 1;">🔄 Reload</button>
+              <button class="btn-stop btn-stop-queue" data-url="${escHtml(q.chatUrl)}" style="margin-top: 0; padding: 6px; font-size: 10.5px; flex: 1;">■ Stop</button>
             ` : `
-              <button class="btn-ghost btn-remove-queue" data-url="${escHtml(q.chatUrl)}" style="margin-top:12px; padding: 6px 12px; font-size:11px; flex: 1; text-align: center;">🗑 Remove History</button>
+              <button class="btn-ghost btn-focus-tab" data-url="${escHtml(q.chatUrl)}" style="padding: 6px; font-size: 10.5px; flex: 1;">🔍 Open Chat</button>
+              <button class="btn-ghost btn-remove-queue" data-url="${escHtml(q.chatUrl)}" style="padding: 6px; font-size: 10.5px; flex: 1; text-align: center;">🗑 Remove</button>
             `}
+          </div>
+          
+          <div class="queue-card-log-trigger" data-url="${escHtml(q.chatUrl)}">Show Log Preview ▾</div>
+          <div class="queue-card-log-preview" style="display: none;">
+            ${(q.log && q.log.length > 0) ? q.log.slice(-3).map(line => `<div style="margin-bottom: 2px;">${escHtml(line)}</div>`).join("") : "No log entries yet."}
           </div>
         </div>
       `;
@@ -253,6 +278,57 @@ function renderStatus() {
       };
     });
 
+    el.querySelectorAll(".btn-focus-tab").forEach(btn => {
+      btn.onclick = () => {
+        const url = btn.dataset.url;
+        chrome.tabs.query({}, tabs => {
+          const cleanTarget = cleanUrlForComparison(url);
+          const exact = tabs.find(t => t.url && cleanUrlForComparison(t.url) === cleanTarget);
+          if (exact) {
+            chrome.tabs.update(exact.id, { active: true }, () => {
+              if (exact.windowId) chrome.windows.update(exact.windowId, { focused: true });
+            });
+          } else {
+            toast("Opening chat tab...");
+            chrome.tabs.create({ url });
+          }
+        });
+      };
+    });
+
+    el.querySelectorAll(".btn-force-send").forEach(btn => {
+      btn.onclick = () => {
+        const url = btn.dataset.url;
+        chrome.runtime.sendMessage({ type: "FORCE_SEND", chatUrl: url }, () => {
+          toast("✓ Force send triggered!");
+          updateUI();
+          renderStatus();
+        });
+      };
+    });
+
+    el.querySelectorAll(".btn-reload-tab").forEach(btn => {
+      btn.onclick = () => {
+        const url = btn.dataset.url;
+        chrome.runtime.sendMessage({ type: "RELOAD_QUEUE_TAB", chatUrl: url }, () => {
+          toast("✓ Tab reload triggered");
+          updateUI();
+          renderStatus();
+        });
+      };
+    });
+
+    el.querySelectorAll(".queue-card-log-trigger").forEach(trigger => {
+      trigger.onclick = () => {
+        const preview = trigger.nextElementSibling;
+        if (preview && preview.classList.contains("queue-card-log-preview")) {
+          const isHidden = window.getComputedStyle(preview).display === "none";
+          preview.style.display = isHidden ? "block" : "none";
+          trigger.textContent = isHidden ? "Hide Log Preview ▴" : "Show Log Preview ▾";
+        }
+      };
+    });
+
     // Fetch live usage from the active tab if it matches
     chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
       let tab = tabs && tabs[0];
@@ -267,6 +343,9 @@ function renderStatus() {
 
         const sessionEl = $("statusSession");
         const weeklyEl  = $("statusWeekly");
+        const usageCont = $("statusUsageContainer");
+
+        if (usageCont) usageCont.style.display = "block";
 
         if (sessionEl && usage.session) {
           const pct = usage.session.pct;
@@ -556,10 +635,23 @@ function renderTemplates() {
 
 // ── Render settings panel ─────────────────────────────────────────────
 function renderSettings() {
-  chrome.storage.local.get(["soundPref", "fabEnabled", "autoCaptureEnabled", "promptHistory"], d => {
+  chrome.storage.local.get(["soundPref", "ttsVoice", "theme", "fabEnabled", "autoCaptureEnabled", "promptHistory"], d => {
     $("selSound").value = d.soundPref || "chime";
+    $("selTheme").value = d.theme || "default";
     $("chkFab").checked = d.fabEnabled !== false;
     $("chkAutoCapture").checked = d.autoCaptureEnabled !== false;
+
+    // Show/hide TTS voice row
+    const rowTts = $("rowTtsVoice");
+    if (rowTts) {
+      rowTts.style.display = d.soundPref === "tts" ? "flex" : "none";
+    }
+
+    // Populate and set voice selector
+    populateTtsVoices(d.ttsVoice);
+
+    // Apply active theme
+    applyTheme(d.theme || "default");
 
     // Render history
     const history = d.promptHistory || [];
@@ -605,7 +697,7 @@ function renderSettings() {
 }
 
 // ── Load saved settings on open ───────────────────────────────────────
-chrome.storage.local.get(["savedSettings", "autoCaptureEnabled", "soundPref"], ({ savedSettings, autoCaptureEnabled, soundPref }) => {
+chrome.storage.local.get(["savedSettings", "autoCaptureEnabled", "soundPref", "theme"], ({ savedSettings, autoCaptureEnabled, soundPref, theme }) => {
   if (savedSettings) {
     if (savedSettings.chatUrl)      $("chatUrl").value      = savedSettings.chatUrl;
     if (savedSettings.prompt)       $("prompt").value       = savedSettings.prompt;
@@ -616,6 +708,8 @@ chrome.storage.local.get(["savedSettings", "autoCaptureEnabled", "soundPref"], (
   }
   
   $("selSound").value = soundPref || "chime";
+  $("selTheme").value = theme || "default";
+  applyTheme(theme || "default");
   
   // If the prompt is still empty, auto-detect composer text
   if (autoCaptureEnabled !== false && !$("prompt").value.trim()) {
@@ -682,8 +776,31 @@ $("selSound").addEventListener("change", () => {
         });
       });
       toast("✓ Alert sound set to " + val.toUpperCase());
+      const rowTts = $("rowTtsVoice");
+      if (rowTts) rowTts.style.display = val === "tts" ? "flex" : "none";
     });
   });
+});
+
+$("selTtsVoice").addEventListener("change", () => {
+  const val = $("selTtsVoice").value;
+  chrome.storage.local.set({ ttsVoice: val }, () => {
+    toast("✓ TTS Voice accent set");
+  });
+});
+
+$("selTheme").addEventListener("change", () => {
+  const val = $("selTheme").value;
+  chrome.storage.local.set({ theme: val }, () => {
+    applyTheme(val);
+    toast("✓ Theme updated to " + val.toUpperCase());
+  });
+});
+
+$("btnPlaySoundPreview").addEventListener("click", () => {
+  const soundType = $("selSound").value;
+  const voiceName = $("selTtsVoice").value;
+  playLocalSoundPreview(soundType, voiceName);
 });
 
 $("chkFab").addEventListener("change", () => {
@@ -700,12 +817,19 @@ $("btnClearHistory").addEventListener("click", () => {
   chrome.storage.local.set({
     promptHistory: [],
     soundPref: "chime",
+    ttsVoice: "",
+    theme: "default",
     fabEnabled: true,
     autoCaptureEnabled: true
   }, () => {
     chrome.runtime.sendMessage({ type: "SET_SOUND_PREF", data: { soundPref: "chime" } });
     updateSetting("fabEnabled", true);
     updateSetting("autoCaptureEnabled", true);
+    applyTheme("default");
+    $("selSound").value = "chime";
+    $("selTheme").value = "default";
+    const rowTts = $("rowTtsVoice");
+    if (rowTts) rowTts.style.display = "none";
     renderSettings();
     toast("🗑 History and settings cleared");
   });
@@ -720,11 +844,142 @@ $("btnSaveTemplate").addEventListener("click", () => {
   toast("✓ Saved as template");
 });
 
-// Auto-refresh status every 5 seconds when popup is open
+// Auto-refresh status every 4 seconds when popup is open
 setInterval(() => {
   const activeTab = document.querySelector(".tab.active");
   if (activeTab?.dataset.tab === "status") renderStatus();
+  if (activeTab?.dataset.tab === "analytics") renderAnalytics();
   if (activeTab?.dataset.tab === "log") renderLog();
   if (activeTab?.dataset.tab === "settings") renderSettings();
   updateUI();
-}, 5000);
+}, 4000);
+
+function applyTheme(themeName) {
+  document.body.classList.remove("theme-cyberpunk", "theme-light", "theme-emerald");
+  if (themeName !== "default") {
+    document.body.classList.add(`theme-${themeName}`);
+  }
+}
+
+function populateTtsVoices(selectedVoiceName) {
+  if (typeof speechSynthesis === 'undefined') return;
+  const select = $("selTtsVoice");
+  if (!select) return;
+  
+  const voices = speechSynthesis.getVoices();
+  select.innerHTML = voices.map(v => `<option value="${escHtml(v.name)}" ${v.name === selectedVoiceName ? "selected" : ""}>${escHtml(v.name)} (${escHtml(v.lang)})</option>`).join("");
+}
+
+// In case voices load after popup open
+if (typeof speechSynthesis !== 'undefined' && speechSynthesis.onvoiceschanged !== undefined) {
+  speechSynthesis.onvoiceschanged = () => {
+    chrome.storage.local.get("ttsVoice", d => populateTtsVoices(d.ttsVoice));
+  };
+}
+
+function playLocalSoundPreview(soundType, voiceName) {
+  try {
+    if (soundType === "chime") {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const notes = [523.25, 659.25, 783.99]; // C5, E5, G5
+      notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freq, ctx.currentTime + i * 0.12);
+        gain.gain.setValueAtTime(0.15, ctx.currentTime + i * 0.12);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.12 + 0.5);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + i * 0.12);
+        osc.stop(ctx.currentTime + i * 0.12 + 0.5);
+      });
+      setTimeout(() => ctx.close(), 2000);
+    } else if (soundType === "beep") {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      gain.gain.setValueAtTime(0.1, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.4);
+      setTimeout(() => ctx.close(), 1000);
+    } else if (soundType === "tts") {
+      if (typeof speechSynthesis !== "undefined") {
+        const utterance = new SpeechSynthesisUtterance("ChatQueue AI is ready!");
+        if (voiceName) {
+          const voice = speechSynthesis.getVoices().find(v => v.name === voiceName);
+          if (voice) utterance.voice = voice;
+        }
+        speechSynthesis.speak(utterance);
+      }
+    }
+  } catch {}
+}
+
+function renderAnalytics() {
+  chrome.storage.local.get(["stats_totalSends", "stats_limitHits", "usageHistory"], d => {
+    const sends = d.stats_totalSends || 0;
+    const hits = d.stats_limitHits || 0;
+    const history = d.usageHistory || [];
+
+    const sendsVal = $("valTotalSends");
+    const hitsVal = $("valLimitHits");
+    const chartContainer = $("chartSvgContainer");
+
+    if (sendsVal) sendsVal.textContent = sends;
+    if (hitsVal) hitsVal.textContent = hits;
+
+    if (!chartContainer) return;
+
+    if (history.length < 2) {
+      chartContainer.innerHTML = `<span style="color:var(--muted); font-size:11px;">Insufficient history checkpoints (${history.length}/2)</span>`;
+      return;
+    }
+
+    // Draw interactive SVG line chart of last 15 utilization points
+    const points = history.slice(-15);
+    const width = 300;
+    const height = 110;
+    const padding = 15;
+    const maxVal = 100;
+    const xStride = (width - padding * 2) / (points.length - 1);
+
+    const coordinates = points.map((p, i) => {
+      const x = padding + i * xStride;
+      const sVal = typeof p.s === "number" ? p.s : 0;
+      const y = height - padding - (sVal / maxVal) * (height - padding * 2);
+      return { x, y, val: sVal };
+    });
+
+    const pathData = coordinates.map((c, i) => `${i === 0 ? "M" : "L"} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`).join(" ");
+    const areaPathData = `${pathData} L ${coordinates[coordinates.length - 1].x.toFixed(1)} ${(height - padding).toFixed(1)} L ${coordinates[0].x.toFixed(1)} ${(height - padding).toFixed(1)} Z`;
+    const dots = coordinates.map(c => `<circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="3.5" fill="var(--accent)" stroke="#fff" stroke-width="1.2"><title>${c.val}% utilization</title></circle>`).join("");
+
+    chartContainer.innerHTML = `
+      <svg width="${width}" height="${height}" style="overflow:visible;">
+        <defs>
+          <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.32"/>
+            <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.0"/>
+          </linearGradient>
+        </defs>
+        
+        <line x1="${padding}" y1="${padding}" x2="${width - padding}" y2="${padding}" stroke="var(--border)" stroke-width="0.7" stroke-dasharray="2 2" />
+        <line x1="${padding}" y1="${height/2}" x2="${width - padding}" y2="${height/2}" stroke="var(--border)" stroke-width="0.7" stroke-dasharray="2 2" />
+        <line x1="${padding}" y1="${height - padding}" x2="${width - padding}" y2="${height - padding}" stroke="var(--border)" stroke-width="1" />
+        
+        <path d="${areaPathData}" fill="url(#chartGrad)" />
+        <path d="${pathData}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" />
+        ${dots}
+        
+        <text x="${padding}" y="${padding - 4}" fill="var(--muted)" font-size="8" font-family="var(--font-mono)">100%</text>
+        <text x="${padding}" y="${height - padding + 10}" fill="var(--muted)" font-size="8" font-family="var(--font-mono)">Time ➜</text>
+      </svg>
+    `;
+  });
+}
