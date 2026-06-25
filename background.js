@@ -121,6 +121,18 @@ function startResume(data) {
   chrome.storage.local.get("queues", d => {
     const queues = d.queues || {};
     queues[chatUrl] = state;
+
+    // Prune logic: keep maximum 15 inactive queues in history to prevent storage bloat
+    const queueList = Object.values(queues);
+    if (queueList.length > 15) {
+      const inactive = queueList.filter(q => !q.active);
+      inactive.sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
+      const toRemoveCount = queueList.length - 15;
+      for (let i = 0; i < Math.min(toRemoveCount, inactive.length); i++) {
+        delete queues[inactive[i].chatUrl];
+      }
+    }
+
     chrome.storage.local.set({ queues, resumeState: state }, () => {
       chrome.alarms.clear(ALARM, () => {
         chrome.alarms.create(ALARM, { periodInMinutes: 1 });
@@ -348,6 +360,27 @@ function attemptSend(state) {
         if (chrome.runtime.lastError || !tab) {
           addLog(chatUrl, "Tab was closed. Will retry next cycle.");
           return;
+        }
+
+        if (tab.url) {
+          const cleanTabUrl = tab.url.toLowerCase();
+          const isLoginRedirect = ["/login", "/auth", "/signin", "/sign-in", "/signup", "/sign-up", "auth.chatgpt.com"].some(keyword => cleanTabUrl.includes(keyword));
+          if (isLoginRedirect) {
+            addLog(chatUrl, "✗ Stopped: Authorization or Login page detected. Please open the page and log in.");
+            updateState(chatUrl, s => { s.active = false; s.status = "failed"; return s; });
+            return;
+          }
+
+          try {
+            const tabHost = new URL(tab.url).hostname.toLowerCase();
+            const targetHost = new URL(chatUrl).hostname.toLowerCase();
+            const getBaseDomain = host => host.split('.').slice(-2).join('.');
+            if (getBaseDomain(tabHost) !== getBaseDomain(targetHost)) {
+              addLog(chatUrl, `Tab navigated to external site (${tabHost}). Re-routing to ${targetHost}...`);
+              chrome.tabs.update(tabId, { url: chatUrl });
+              return;
+            }
+          } catch (err) {}
         }
         chrome.tabs.sendMessage(tabId, { type: "CHECK_LIMIT" }, resp => {
           if (chrome.runtime.lastError || !resp) {

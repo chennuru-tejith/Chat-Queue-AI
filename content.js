@@ -526,7 +526,13 @@ function canSend() {
 
 function getInput() {
   const config = getSiteConfig();
-  return document.querySelector(config.inputSelector);
+  const els = document.querySelectorAll(config.inputSelector);
+  for (const el of els) {
+    if (el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0) {
+      return el;
+    }
+  }
+  return els[0] || null;
 }
 
 function getAIComposerText() {
@@ -541,8 +547,12 @@ function getAIComposerText() {
 function getSendBtn() {
   const config = getSiteConfig();
   for (const sel of config.sendBtnSelectors) {
-    const btn = document.querySelector(sel);
-    if (btn) return btn;
+    const els = document.querySelectorAll(sel);
+    for (const el of els) {
+      if (el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0) {
+        return el;
+      }
+    }
   }
   return null;
 }
