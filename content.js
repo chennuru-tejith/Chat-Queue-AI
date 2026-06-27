@@ -227,13 +227,17 @@ const SITE_CONFIGS = {
       'button[aria-label*="Send" i]'
     ],
     isLimitActive: () => {
-      if (latestUsageData?.session?.pct >= 100) return true;
+      if (latestUsageData?.session?.pct >= 100 || latestUsageData?.weekly?.pct >= 100) return true;
+      if (isAiResponding()) return false;
+      if (checkInputPlaceholderForLimit()) return true;
+
       const body = getPageTextExcludingChat().toLowerCase();
       const limitPhrases = [
         "usage limit reached", "you've reached your limit",
         "try again in", "out of messages", "limit reached",
         "over the limit", "you've hit your", "out of free messages",
-        "messages until"
+        "messages until", "quota exceeded", "please try again after",
+        "resets at", "limit will reset"
       ];
       if (limitPhrases.some(p => body.includes(p))) return true;
 
@@ -286,6 +290,9 @@ const SITE_CONFIGS = {
       'button[aria-label*="Send" i]'
     ],
     isLimitActive: () => {
+      if (isAiResponding()) return false;
+      if (checkInputPlaceholderForLimit()) return true;
+
       const body = getPageTextExcludingChat().toLowerCase();
       const limitPhrases = [
         "you've reached your gpt-4 limit",
@@ -294,7 +301,14 @@ const SITE_CONFIGS = {
         "reached the message limit",
         "try again after",
         "try again in",
-        "messages will reset"
+        "messages will reset",
+        "gpt-4o limit",
+        "rate limit exceeded",
+        "too many requests",
+        "quota exceeded",
+        "wait until",
+        "reset at",
+        "resets at"
       ];
       if (limitPhrases.some(p => body.includes(p))) return true;
 
@@ -339,13 +353,22 @@ const SITE_CONFIGS = {
       'button[aria-label*="Send" i]'
     ],
     isLimitActive: () => {
+      if (isAiResponding()) return false;
+      if (checkInputPlaceholderForLimit()) return true;
+
       const body = getPageTextExcludingChat().toLowerCase();
       const limitPhrases = [
         "reached the daily limit",
         "limit reached",
         "try again in",
         "quota exceeded",
-        "resource exhausted"
+        "resource exhausted",
+        "reached the limit",
+        "daily limit",
+        "try again after",
+        "try again at",
+        "please try again later",
+        "exceeded the rate limit"
       ];
       if (limitPhrases.some(p => body.includes(p))) return true;
 
@@ -353,6 +376,8 @@ const SITE_CONFIGS = {
       if (input) {
         const editable = input.getAttribute("contenteditable");
         if (editable === "false" || editable === null) return true;
+        const style = window.getComputedStyle(input);
+        if (style.pointerEvents === "none") return true;
       }
       return false;
     },
@@ -387,19 +412,29 @@ const SITE_CONFIGS = {
       'button:has(svg)'
     ],
     isLimitActive: () => {
+      if (isAiResponding()) return false;
+      if (checkInputPlaceholderForLimit()) return true;
+
       const body = getPageTextExcludingChat().toLowerCase();
       const limitPhrases = [
         "server capacity limited",
         "busy",
         "reached the limit",
         "please try again later",
-        "try again in"
+        "try again in",
+        "quota exceeded",
+        "rate limit",
+        "try again after",
+        "try again at",
+        "resets in"
       ];
       if (limitPhrases.some(p => body.includes(p))) return true;
 
       const input = getInput();
       if (input) {
         if (input.disabled || input.getAttribute("disabled") !== null) return true;
+        const style = window.getComputedStyle(input);
+        if (style.pointerEvents === "none") return true;
       }
       return false;
     },
@@ -500,6 +535,52 @@ async function runPeriodicUsageFetch() {
       refreshStatus();
     }
   }
+}
+
+function isAiResponding() {
+  try {
+    const stopSelectors = [
+      'button[aria-label*="Stop" i]',
+      'button[aria-label*="Cancel" i]',
+      'button[data-testid="stop-button"]',
+      'div[class*="stopBtn"]',
+      'button:has(svg rect)', 
+      'button svg[class*="stop"]'
+    ];
+    for (const selector of stopSelectors) {
+      if (document.querySelector(selector)) return true;
+    }
+  } catch {}
+  return false;
+}
+
+function checkInputPlaceholderForLimit() {
+  try {
+    const input = getInput();
+    if (!input) return false;
+    
+    let text = (
+      input.getAttribute("placeholder") || 
+      input.placeholder || 
+      input.getAttribute("data-placeholder") || 
+      input.getAttribute("aria-label") || 
+      ""
+    ).toLowerCase();
+    
+    const phrases = [
+      "limit reached",
+      "reached your limit",
+      "try again after",
+      "try again in",
+      "out of messages",
+      "messages remaining",
+      "resets at",
+      "quota exceeded"
+    ];
+    
+    return phrases.some(p => text.includes(p));
+  } catch {}
+  return false;
 }
 
 // ── Limit & input detection ───────────────────────────────────────────
