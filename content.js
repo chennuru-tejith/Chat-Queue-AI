@@ -1067,15 +1067,27 @@ async function syncAllSidebarChats() {
         if (!isCtxValid()) break;
         
         const chatData = await fetchClaudeChatFromApi(uuid);
-        if (chatData) {
-          await new Promise(resolve => {
-            safeGet("chatCache", curr => {
-              const currentCache = curr?.chatCache || {};
+        await new Promise(resolve => {
+          safeGet("chatCache", curr => {
+            const currentCache = curr?.chatCache || {};
+            if (chatData) {
               currentCache[uuid] = chatData;
-              safeSet({ chatCache: currentCache }, resolve);
-            });
+            } else {
+              // Stub to prevent constant retries of failed/deleted chats
+              if (!currentCache[uuid]) {
+                currentCache[uuid] = {
+                  uuid,
+                  title: "Inaccessible Chat",
+                  messages: [],
+                  lastUpdated: Date.now()
+                };
+              } else {
+                currentCache[uuid].lastUpdated = Date.now();
+              }
+            }
+            safeSet({ chatCache: currentCache }, resolve);
           });
-        }
+        });
         await new Promise(resolve => setTimeout(resolve, 2500));
       }
       isSyncingChats = false;
@@ -3081,6 +3093,10 @@ function showToast(msg) {
 
 function escH(s) {
   return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+function escHtml(s) {
+  return escH(s);
 }
 
 
