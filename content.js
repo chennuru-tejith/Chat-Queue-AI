@@ -983,6 +983,108 @@ function recycleChat(uuid) {
   } catch {}
 }
 
+async function fetchClaudeChatFromApi(chatId) {
+  try {
+    const orgsResp = await fetch("https://claude.ai/api/organizations");
+    const orgs = await orgsResp.json();
+    const orgId = orgs[0]?.uuid;
+    if (!orgId) return null;
+    
+    const chatResp = await fetch(`https://claude.ai/api/organizations/${orgId}/chats/${chatId}`);
+    if (!chatResp.ok) return null;
+    const chatData = await chatResp.json();
+    
+    const apiMessages = chatData.chat_messages || chatData.messages || [];
+    const messages = [];
+    
+    for (const msg of apiMessages) {
+      const sender = msg.sender || msg.role;
+      const role = (sender === "human" || sender === "user") ? "human" : "assistant";
+      
+      let text = "";
+      if (typeof msg.text === "string") {
+        text = msg.text;
+      } else if (Array.isArray(msg.content)) {
+        text = msg.content.map(c => c.text || "").join("\n");
+      } else if (msg.content && typeof msg.content === "string") {
+        text = msg.content;
+      }
+      
+      if (text) {
+        messages.push({ role, text });
+      }
+    }
+    
+    return {
+      uuid: chatId,
+      title: chatData.name || chatData.title || "Untitled Chat",
+      messages,
+      lastUpdated: Date.now()
+    };
+  } catch (err) {
+    console.warn("Failed to fetch chat details from Claude API:", err);
+    return null;
+  }
+}
+
+let isSyncingChats = false;
+
+async function syncAllSidebarChats() {
+  if (isSyncingChats) return;
+  if (!location.hostname.includes("claude.ai")) return;
+
+  isSyncingChats = true;
+  try {
+    const chatLinks = Array.from(document.querySelectorAll('a[href*="/chat/"]'));
+    const uuids = [];
+    for (const link of chatLinks) {
+      const m = link.href.match(/\/chat\/([0-9a-fA-F-]+)/i);
+      if (m) {
+        uuids.push(m[1]);
+      }
+    }
+
+    if (uuids.length === 0) {
+      isSyncingChats = false;
+      return;
+    }
+
+    safeGet("chatCache", async d => {
+      const cache = d?.chatCache || {};
+      const now = Date.now();
+      
+      const toSync = uuids.filter(uuid => {
+        const cached = cache[uuid];
+        return !cached || (now - (cached.lastUpdated || 0) > 2 * 60 * 60 * 1000);
+      });
+
+      if (toSync.length === 0) {
+        isSyncingChats = false;
+        return;
+      }
+
+      for (const uuid of toSync) {
+        if (!isCtxValid()) break;
+        
+        const chatData = await fetchClaudeChatFromApi(uuid);
+        if (chatData) {
+          await new Promise(resolve => {
+            safeGet("chatCache", curr => {
+              const currentCache = curr?.chatCache || {};
+              currentCache[uuid] = chatData;
+              safeSet({ chatCache: currentCache }, resolve);
+            });
+          });
+        }
+        await new Promise(resolve => setTimeout(resolve, 2500));
+      }
+      isSyncingChats = false;
+    });
+  } catch (err) {
+    isSyncingChats = false;
+  }
+}
+
 function getClaudeSidebarContainer() {
   try {
     const firstChatLink = document.querySelector('a[href*="/chat/"]');
@@ -1239,6 +1341,15 @@ function setupRecycleBinListeners() {
             const uuid = lastInteractedUuid || getCurrentChatUuid();
             if (uuid) {
               updateLocalChatCache(true);
+              fetchClaudeChatFromApi(uuid).then(chatData => {
+                if (chatData) {
+                  safeGet("chatCache", curr => {
+                    const cache = curr?.chatCache || {};
+                    cache[uuid] = chatData;
+                    safeSet({ chatCache: cache });
+                  });
+                }
+              });
             }
           }
           if (text === "delete" || text === "delete chat" || text === "confirm") {
@@ -1252,6 +1363,8 @@ function setupRecycleBinListeners() {
     }, { passive: true });
     
     setTimeout(injectRecycleBinIntoSidebar, 1500);
+    setTimeout(syncAllSidebarChats, 4000);
+    setInterval(syncAllSidebarChats, 5 * 60 * 1000);
   } catch {}
 }
 
