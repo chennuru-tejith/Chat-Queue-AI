@@ -11,7 +11,7 @@ document.querySelectorAll(".tab").forEach(tab => {
     $(`tab-${tab.dataset.tab}`).classList.add("active");
     if (tab.dataset.tab === "status") renderStatus();
     if (tab.dataset.tab === "analytics") renderAnalytics();
-    if (tab.dataset.tab === "log") renderLog();
+    if (tab.dataset.tab === "trash") renderTrash();
     if (tab.dataset.tab === "settings") renderSettings();
   });
 });
@@ -368,43 +368,138 @@ function renderStatus() {
   });
 }
 
-// ── Render log tab ────────────────────────────────────────────────────
-function renderLog() {
-  const currentUrl = $("chatUrl").value.trim();
-  chrome.runtime.sendMessage({ type: "GET_STATUS" }, resp => {
-    const queues = resp?.queues || {};
-    const box = $("logBox");
-    
-    const activeUrls = Object.keys(queues);
-    if (activeUrls.length === 0) {
-      box.innerHTML = `<span class="log-line" style="color:var(--muted)">No log entries yet.</span>`;
+const EXPORT_TEMPLATES = {
+  chatgpt: {
+    name: 'ChatGPT', color: '#10a37f', icon: '🟢',
+    wrap: (conv) => `I'm continuing a conversation from Claude AI. Here is the full conversation history so you have complete context:\n\n${conv}\n\nPlease continue from where the last response ended. Maintain the same context, coding style, and approach. Pick up the next task naturally.`
+  },
+  gemini: {
+    name: 'Gemini', color: '#4285f4', icon: '🔵',
+    wrap: (conv) => `I need to continue work from a previous session on Claude AI. Below is the complete conversation for context:\n\n${conv}\n\nPlease pick up from the last response and continue the work seamlessly. Keep the same approach and style.`
+  },
+  claude: {
+    name: 'Claude', color: '#d97706', icon: '🟠',
+    wrap: (conv) => `Here is a conversation from a previous Claude session that I need to continue:\n\n${conv}\n\nPlease continue from where we left off, maintaining the same approach and context.`
+  },
+  deepseek: {
+    name: 'DeepSeek', color: '#6366f1', icon: '🟣',
+    wrap: (conv) => `I'm transferring context from a Claude AI conversation. Here is the full discussion for you to continue from:\n\n${conv}\n\nPlease continue the work from where the last response ended. Maintain the same style and approach.`
+  },
+  custom: {
+    name: 'Raw', color: '#8b8ba0', icon: '📄',
+    wrap: (conv) => conv
+  }
+};
+
+function formatForExport(messages, targetAI) {
+  if (!messages || messages.length === 0) return '(No messages found in this conversation)';
+  const conv = messages.map(m => {
+    const label = m.role === 'human' ? 'Human' : 'Assistant';
+    return `**${label}:**\n${m.text}`;
+  }).join('\n\n---\n\n');
+  const template = EXPORT_TEMPLATES[targetAI] || EXPORT_TEMPLATES.custom;
+  return template.wrap(conv);
+}
+
+// ── Render Recycle Bin tab ────────────────────────────────────────────
+function renderTrash() {
+  chrome.storage.local.get("recycleBin", d => {
+    const bin = d.recycleBin || [];
+    const list = $("trashList");
+    if (!list) return;
+
+    if (bin.length === 0) {
+      list.innerHTML = `
+        <div class="empty-state" style="padding: 24px 10px;">
+          <div class="empty-icon">🗑</div>
+          <div class="empty-text">Recycle Bin is empty.</div>
+        </div>
+      `;
       return;
     }
 
-    // Use current typed URL or fallback to the first queue
-    const targetUrl = queues[currentUrl] ? currentUrl : activeUrls[0];
-    const state = queues[targetUrl];
+    list.innerHTML = bin.map((item, idx) => {
+      const date = new Date(item.deletedAt || Date.now()).toLocaleString([], { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+      return `
+        <div class="history-item" style="padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; align-items: stretch; margin-bottom: 4px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="font-weight: 600; font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 190px;" title="${escHtml(item.title)}">${escHtml(item.title)}</div>
+            <span style="font-size: 8px; color: var(--muted);">${date}</span>
+          </div>
+          <div style="font-size: 10px; color: var(--muted); display: flex; justify-content: space-between; align-items: center;">
+            <span>${item.messages.length} messages</span>
+            <div style="display: flex; gap: 6px;">
+              <button class="btn-ghost btn-view-trash" data-idx="${idx}" style="padding: 2px 6px; font-size: 9px; height: 18px;">👁 View</button>
+              <button class="btn-ghost btn-restore-trash" data-idx="${idx}" style="padding: 2px 6px; font-size: 9px; height: 18px; color: var(--accent);">📥 Restore</button>
+              <button class="btn-ghost btn-delete-trash" data-idx="${idx}" style="padding: 2px 6px; font-size: 9px; height: 18px; color: var(--red);">✕</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join("");
 
-    if (!state || !state.log || state.log.length === 0) {
-      box.innerHTML = `<span class="log-line">No log entries yet for ${getDomainName(targetUrl) || "AI"}.</span>`;
-      return;
-    }
+    // Bind listeners
+    list.querySelectorAll(".btn-view-trash").forEach(btn => {
+      btn.onclick = () => {
+        const idx = parseInt(btn.dataset.idx);
+        const item = bin[idx];
+        if (item) {
+          activePreviewChat = item;
+          $("previewModalTitle").textContent = item.title;
+          renderPreviewMessages(item.messages);
+          $("previewModal").style.display = "flex";
+        }
+      };
+    });
 
-    const platform = getDomainName(targetUrl) || "AI";
-    const headerHtml = `<div style="font-size: 10px; color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 8px; font-family: var(--font-heading); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Showing Logs for: ${platform}</div>`;
+    list.querySelectorAll(".btn-restore-trash").forEach(btn => {
+      btn.onclick = () => {
+        const idx = parseInt(btn.dataset.idx);
+        const item = bin[idx];
+        if (item) {
+          const markdown = formatForExport(item.messages, 'custom');
+          navigator.clipboard.writeText(markdown).then(() => {
+            toast("✓ History copied to clipboard!");
+            chrome.tabs.create({ url: "https://claude.ai/chat/" });
+          });
+        }
+      };
+    });
 
-    const logLines = state.log.map(line => {
-      let cls = "";
-      if (line.includes("✓") || line.includes("sent") || line.includes("Success")) cls = "success";
-      else if (line.includes("⚠") || line.includes("Wait") || line.includes("Waiting")) cls = "warn";
-      else if (line.includes("Checking") || line.includes("Attempt") || line.includes("Check")) cls = "info";
-      else if (line.includes("✗") || line.includes("Failed") || line.includes("Error")) cls = "error";
-      return `<span class="log-line ${cls}">${escHtml(line)}</span>`;
-    }).join("\n");
-
-    box.innerHTML = headerHtml + logLines;
-    box.scrollTop = box.scrollHeight;
+    list.querySelectorAll(".btn-delete-trash").forEach(btn => {
+      btn.onclick = () => {
+        const idx = parseInt(btn.dataset.idx);
+        chrome.storage.local.get("recycleBin", data => {
+          const binList = data.recycleBin || [];
+          binList.splice(idx, 1);
+          chrome.storage.local.set({ recycleBin: binList }, () => {
+            toast("🗑 Chat permanently deleted");
+            renderTrash();
+          });
+        });
+      };
+    });
   });
+}
+
+function renderPreviewMessages(messages) {
+  const container = $("previewModalBody");
+  if (!container) return;
+  
+  container.innerHTML = messages.map(m => {
+    const isHuman = m.role === "human";
+    const bg = isHuman ? "rgba(217, 70, 239, 0.05)" : "rgba(255, 255, 255, 0.02)";
+    const border = isHuman ? "rgba(217, 70, 239, 0.15)" : "var(--border)";
+    const color = isHuman ? "var(--accent)" : "#ffffff";
+    const roleLabel = isHuman ? "Human" : "Assistant";
+    
+    return `
+      <div style="background: ${bg}; border: 1px solid ${border}; border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 8px;">
+        <div style="font-size: 9px; font-weight: 600; text-transform: uppercase; color: ${color}; margin-bottom: 4px; font-family: var(--font-heading);">${roleLabel}</div>
+        <div style="white-space: pre-wrap; font-family: var(--font-body); word-break: break-word;">${escHtml(m.text)}</div>
+      </div>
+    `;
+  }).join("");
 }
 
 // ── Update overall UI state ───────────────────────────────────────────
@@ -849,7 +944,7 @@ setInterval(() => {
   const activeTab = document.querySelector(".tab.active");
   if (activeTab?.dataset.tab === "status") renderStatus();
   if (activeTab?.dataset.tab === "analytics") renderAnalytics();
-  if (activeTab?.dataset.tab === "log") renderLog();
+  if (activeTab?.dataset.tab === "trash") renderTrash();
   if (activeTab?.dataset.tab === "settings") renderSettings();
   updateUI();
 }, 4000);
@@ -910,7 +1005,7 @@ function playLocalSoundPreview(soundType, voiceName) {
       setTimeout(() => ctx.close(), 1000);
     } else if (soundType === "tts") {
       if (typeof speechSynthesis !== "undefined") {
-        const utterance = new SpeechSynthesisUtterance("ChatQueue AI is ready!");
+        const utterance = new SpeechSynthesisUtterance("Claude Safeguard is ready!");
         if (voiceName) {
           const voice = speechSynthesis.getVoices().find(v => v.name === voiceName);
           if (voice) utterance.voice = voice;
@@ -983,3 +1078,40 @@ function renderAnalytics() {
     `;
   });
 }
+
+// ── Preview Modal & Recycle Bin Event Listeners ───────────────────────
+let activePreviewChat = null;
+
+$("btnClearTrash").addEventListener("click", () => {
+  chrome.storage.local.set({ recycleBin: [] }, () => {
+    toast("🗑 Recycle Bin cleared");
+    renderTrash();
+  });
+});
+
+$("btnClosePreview").addEventListener("click", () => {
+  $("previewModal").style.display = "none";
+});
+
+$("btnCopyPreview").addEventListener("click", () => {
+  if (activePreviewChat) {
+    const markdown = formatForExport(activePreviewChat.messages, 'custom');
+    navigator.clipboard.writeText(markdown).then(() => {
+      toast("✓ Copied to clipboard!");
+    });
+  }
+});
+
+$("btnDownloadPreview").addEventListener("click", () => {
+  if (activePreviewChat) {
+    const markdown = formatForExport(activePreviewChat.messages, 'custom');
+    const blob = new Blob([markdown], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${activePreviewChat.title.replace(/[^a-zA-Z0-9]/g, "_")}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast("✓ Markdown file downloaded!");
+  }
+});

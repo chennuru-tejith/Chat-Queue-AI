@@ -1,4 +1,4 @@
-// ChatQueue AI — Content Script v4
+// Claude Safeguard — Content Script v4
 // Complete rewrite: correct header injection, reliable limit detection, task overview
 
 let btnCheckInterval = null;
@@ -110,7 +110,7 @@ try {
       sendResponse({ text: getAIComposerText() });
       return;
     }
-    if (msg.type === "TOGGLE_CHATQUEUE") {
+    if (msg.type === "TOGGLE_SAFEGUARD") {
       const url = location.href;
       safeGet("queues", d => {
         const queues = d?.queues || {};
@@ -123,7 +123,7 @@ try {
           }
         }
         if (q?.active) {
-          safeSend({ type: "STOP_RESUME", chatUrl: q.chatUrl }, () => showToast("⏹ ChatQueue AI stopped"));
+          safeSend({ type: "STOP_RESUME", chatUrl: q.chatUrl }, () => showToast("⏹ Claude Safeguard stopped"));
         } else {
           if (!panelOpen) openPanel();
           showToast("Open panel — configure and click Start");
@@ -509,7 +509,7 @@ async function fetchClaudeUsage() {
     lastUsageFetchTime = now;
     return info;
   } catch (err) {
-    console.warn("ChatQueue AI usage fetch error:", err);
+    console.warn("Claude Safeguard usage fetch error:", err);
     return null;
   }
 }
@@ -895,6 +895,366 @@ function resolvePromptVariables(promptText) {
   return resolved;
 }
 
+// ── Claude Recycle Bin & Cache Logic ──────────────────────────────────
+let lastCacheSaveTime = 0;
+let lastCacheMessageCount = 0;
+let lastInteractedUuid = null;
+
+function getCurrentChatUuid() {
+  const m = location.href.match(/claude\.ai\/chat\/([0-9a-fA-F-]+)/i);
+  return m ? m[1] : null;
+}
+
+function getChatTitle(uuid) {
+  try {
+    if (uuid) {
+      const sidebarLink = document.querySelector(`a[href*="/chat/${uuid}"]`);
+      if (sidebarLink) {
+        const text = sidebarLink.textContent.trim();
+        return text.replace(/\s+/g, " ").replace(/⋮$/, "").trim();
+      }
+    }
+    const headerTitle = document.querySelector('div[class*="line-clamp-1"]');
+    if (headerTitle) return headerTitle.textContent.trim();
+    
+    const msgs = scrapeConversation();
+    const firstHuman = msgs.find(m => m.role === 'human');
+    if (firstHuman && firstHuman.text) {
+      return firstHuman.text.slice(0, 30).trim() + "...";
+    }
+  } catch {}
+  return "Untitled Chat";
+}
+
+function updateLocalChatCache(force = false) {
+  try {
+    const uuid = getCurrentChatUuid();
+    if (!uuid) return;
+
+    const now = Date.now();
+    if (!force && (now - lastCacheSaveTime < 5000)) return;
+
+    const messages = scrapeConversation();
+    if (!messages || messages.length === 0) return;
+
+    if (!force && messages.length === lastCacheMessageCount && (now - lastCacheSaveTime < 15000)) return;
+
+    const title = getChatTitle(uuid);
+    
+    safeGet("chatCache", d => {
+      const cache = d?.chatCache || {};
+      cache[uuid] = {
+        uuid,
+        title,
+        messages,
+        lastUpdated: now
+      };
+      safeSet({ chatCache: cache }, () => {
+        lastCacheSaveTime = now;
+        lastCacheMessageCount = messages.length;
+      });
+    });
+  } catch {}
+}
+
+function recycleChat(uuid) {
+  if (!uuid) return;
+  try {
+    safeGet(["chatCache", "recycleBin"], d => {
+      const cache = d?.chatCache || {};
+      const bin = d?.recycleBin || [];
+      
+      const chat = cache[uuid];
+      if (chat) {
+        if (!bin.some(c => c.uuid === uuid)) {
+          bin.unshift({
+            ...chat,
+            deletedAt: Date.now()
+          });
+          if (bin.length > 50) bin.pop();
+        }
+        delete cache[uuid];
+        safeSet({ chatCache: cache, recycleBin: bin }, () => {
+          showToast("✓ Chat moved to Recycle Bin!");
+          renderSidebarTrashList();
+        });
+      }
+    });
+  } catch {}
+}
+
+function getClaudeSidebarContainer() {
+  try {
+    const firstChatLink = document.querySelector('a[href*="/chat/"]');
+    if (firstChatLink) {
+      let parent = firstChatLink.parentElement;
+      while (parent && parent !== document.body) {
+        if (parent.classList.contains('overflow-y-auto') || parent.scrollHeight > parent.clientHeight) {
+          return parent;
+        }
+        parent = parent.parentElement;
+      }
+      return firstChatLink.parentElement;
+    }
+  } catch {}
+  return document.querySelector('nav, [class*="sidebar"], [class*="navigation"]');
+}
+
+function injectRecycleBinIntoSidebar() {
+  try {
+    if (!location.hostname.includes("claude.ai")) return;
+    
+    const container = getClaudeSidebarContainer();
+    if (!container) return;
+    
+    if (document.getElementById("cl-recycle-bin-section")) {
+      renderSidebarTrashList();
+      return;
+    }
+    
+    const section = document.createElement("div");
+    section.id = "cl-recycle-bin-section";
+    section.style.marginTop = "16px";
+    section.style.borderTop = "1px solid rgba(255,255,255,0.08)";
+    section.style.paddingTop = "12px";
+    section.style.paddingBottom = "12px";
+    section.style.fontFamily = "system-ui, -apple-system, sans-serif";
+    
+    section.innerHTML = `
+      <div id="cl-recycle-bin-hdr" style="display:flex; justify-content:space-between; align-items:center; padding: 6px 12px; cursor:pointer; user-select:none; color: rgba(255,255,255,0.5); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">
+        <span style="display:flex; align-items:center; gap:6px;">🗑️ Recycled Chats</span>
+        <span id="cl-recycle-bin-toggle" style="font-size:8px;">▲</span>
+      </div>
+      <div id="cl-recycle-bin-list" style="display:flex; flex-direction:column; gap:4px; margin-top:6px; padding:0 4px; max-height:200px; overflow-y:auto;">
+        <!-- Items populated here -->
+      </div>
+    `;
+    
+    container.appendChild(section);
+    
+    const hdr = section.querySelector("#cl-recycle-bin-hdr");
+    const list = section.querySelector("#cl-recycle-bin-list");
+    const toggle = section.querySelector("#cl-recycle-bin-toggle");
+    
+    safeGet("recycleBinExpanded", d => {
+      const expanded = d.recycleBinExpanded !== false;
+      list.style.display = expanded ? "flex" : "none";
+      toggle.textContent = expanded ? "▲" : "▼";
+    });
+    
+    hdr.onclick = () => {
+      const isVisible = list.style.display !== "none";
+      list.style.display = isVisible ? "none" : "flex";
+      toggle.textContent = isVisible ? "▼" : "▲";
+      safeSet({ recycleBinExpanded: !isVisible });
+    };
+    
+    renderSidebarTrashList();
+  } catch {}
+}
+
+let lastSidebarTrashListJson = "";
+
+function renderSidebarTrashList() {
+  try {
+    const list = document.getElementById("cl-recycle-bin-list");
+    if (!list) return;
+    
+    safeGet("recycleBin", d => {
+      const bin = d.recycleBin || [];
+      const binJson = JSON.stringify(bin.map(b => ({ uuid: b.uuid, title: b.title, len: b.messages.length })));
+      if (binJson === lastSidebarTrashListJson) return;
+      lastSidebarTrashListJson = binJson;
+
+      if (bin.length === 0) {
+        list.innerHTML = `
+          <div style="padding: 8px 12px; font-size:11px; color:rgba(255,255,255,0.3); text-align:center;">
+            Recycle Bin is empty
+          </div>
+        `;
+        return;
+      }
+      
+      list.innerHTML = bin.map((item, idx) => {
+        return `
+          <div class="cl-trash-item" data-idx="${idx}" style="display:flex; align-items:center; justify-content:space-between; padding: 6px 12px; border-radius: 6px; cursor:pointer; font-size: 12.5px; color: rgba(255,255,255,0.8); transition: background 0.15s;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'">
+            <span class="cl-trash-title" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-right:8px;" title="${escHtml(item.title)}">${escHtml(item.title)}</span>
+            <div style="display:flex; gap:6px; flex-shrink:0;">
+              <button class="cl-trash-restore-btn" data-idx="${idx}" title="Restore Chat" style="background:transparent; border:none; padding:2px; cursor:pointer; font-size:10px; opacity:0.6; transition:opacity 0.15s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">📥</button>
+              <button class="cl-trash-delete-btn" data-idx="${idx}" title="Delete Permanently" style="background:transparent; border:none; padding:2px; cursor:pointer; font-size:10px; opacity:0.6; transition:opacity 0.15s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">✕</button>
+            </div>
+          </div>
+        `;
+      }).join("");
+      
+      list.querySelectorAll(".cl-trash-title").forEach(titleEl => {
+        titleEl.onclick = (e) => {
+          e.stopPropagation();
+          const idx = parseInt(titleEl.parentElement.dataset.idx);
+          openSidebarPreviewModal(bin[idx]);
+        };
+      });
+      
+      list.querySelectorAll(".cl-trash-restore-btn").forEach(btn => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          const idx = parseInt(btn.dataset.idx);
+          const item = bin[idx];
+          if (item) {
+            const markdown = formatForExport(item.messages, 'custom');
+            navigator.clipboard.writeText(markdown).then(() => {
+              showToast("✓ History copied! Opening new chat...");
+              const newChatBtn = document.querySelector('a[href="/chat"], button:has(svg path[d*="M12 5v14"])');
+              if (newChatBtn) {
+                newChatBtn.click();
+              } else {
+                location.href = "https://claude.ai/chat/";
+              }
+            });
+          }
+        };
+      });
+      
+      list.querySelectorAll(".cl-trash-delete-btn").forEach(btn => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          const idx = parseInt(btn.dataset.idx);
+          if (confirm("Permanently delete this chat history?")) {
+            safeGet("recycleBin", data => {
+              const binList = data.recycleBin || [];
+              binList.splice(idx, 1);
+              safeSet({ recycleBin: binList }, () => {
+                showToast("🗑️ Chat deleted permanently");
+                lastSidebarTrashListJson = "";
+                renderSidebarTrashList();
+              });
+            });
+          }
+        };
+      });
+    });
+  } catch {}
+}
+
+function openSidebarPreviewModal(chat) {
+  try {
+    document.getElementById("cl-preview-modal")?.remove();
+    
+    const modal = document.createElement("div");
+    modal.id = "cl-preview-modal";
+    modal.style.position = "fixed";
+    modal.style.top = "0";
+    modal.style.left = "0";
+    modal.style.width = "100%";
+    modal.style.height = "100%";
+    modal.style.background = "rgba(0,0,0,0.75)";
+    modal.style.backdropFilter = "blur(8px)";
+    modal.style.zIndex = "999999";
+    modal.style.display = "flex";
+    modal.style.alignItems = "center";
+    modal.style.justifyContent = "center";
+    modal.style.padding = "20px";
+    modal.style.fontFamily = "system-ui, -apple-system, sans-serif";
+    
+    const messagesHtml = chat.messages.map(m => {
+      const isHuman = m.role === "human";
+      const bg = isHuman ? "rgba(217, 70, 239, 0.05)" : "rgba(255,255,255,0.02)";
+      const border = isHuman ? "rgba(217, 70, 239, 0.15)" : "rgba(255,255,255,0.08)";
+      const color = isHuman ? "#d946ef" : "#e5e7eb";
+      const label = isHuman ? "Human" : "Assistant";
+      return `
+        <div style="background: ${bg}; border: 1px solid ${border}; border-radius: 8px; padding: 12px; margin-bottom: 12px; text-align: left;">
+          <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; color: ${color}; margin-bottom: 6px;">${label}</div>
+          <div style="white-space: pre-wrap; font-size: 13px; line-height: 1.5; color: #f3f4f6;">${escHtml(m.text)}</div>
+        </div>
+      `;
+    }).join("");
+    
+    modal.innerHTML = `
+      <div style="background: #191919; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; width: 100%; max-width: 600px; height: 80%; display: flex; flex-direction: column; box-shadow: 0 20px 50px rgba(0,0,0,0.5); overflow:hidden;">
+        <div style="display:flex; justify-content:space-between; align-items:center; padding: 16px 20px; border-bottom: 1px solid rgba(255,255,255,0.08); background:#191919;">
+          <div style="font-weight: 600; font-size: 15px; color: #fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:450px;">🗑️ Recycled: ${escHtml(chat.title)}</div>
+          <button id="cl-modal-close" style="background:transparent; border:none; color:#888; font-size:18px; cursor:pointer; line-height:1;">✕</button>
+        </div>
+        <div style="flex:1; overflow-y:auto; padding: 20px; background:#111;">
+          ${messagesHtml}
+        </div>
+        <div style="display:flex; gap:12px; padding: 16px 20px; border-top: 1px solid rgba(255,255,255,0.08); background:#191919;">
+          <button id="cl-modal-copy" style="flex:1; background:#d946ef; color:#fff; border:none; border-radius:8px; padding: 10px; font-weight:600; cursor:pointer; font-size:13px; transition:background 0.2s;" onmouseover="this.style.background='#c026d3'" onmouseout="this.style.background='#d946ef'">📋 Copy Full History</button>
+          <button id="cl-modal-download" style="flex:1; background:rgba(255,255,255,0.05); color:#fff; border:1px solid rgba(255,255,255,0.15); border-radius:8px; padding: 10px; font-weight:600; cursor:pointer; font-size:13px; transition:background 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.1)'" onmouseout="this.style.background='rgba(255,255,255,0.05)'">📥 Download .md</button>
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    modal.querySelector("#cl-modal-close").onclick = () => modal.remove();
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+    
+    modal.querySelector("#cl-modal-copy").onclick = () => {
+      const markdown = formatForExport(chat.messages, 'custom');
+      navigator.clipboard.writeText(markdown).then(() => {
+        showToast("✓ Copied to clipboard!");
+      });
+    };
+    
+    modal.querySelector("#cl-modal-download").onclick = () => {
+      const markdown = formatForExport(chat.messages, 'custom');
+      const blob = new Blob([markdown], { type: 'text/markdown' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${chat.title.replace(/[^a-zA-Z0-9]/g, "_")}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast("✓ Downloaded markdown!");
+    };
+  } catch {}
+}
+
+function setupRecycleBinListeners() {
+  try {
+    document.addEventListener("mouseover", e => {
+      const link = e.target.closest('a[href*="/chat/"]');
+      if (link) {
+        const m = link.href.match(/\/chat\/([0-9a-fA-F-]+)/i);
+        if (m) {
+          lastInteractedUuid = m[1];
+        }
+      }
+    }, { passive: true });
+
+    document.addEventListener("click", e => {
+      const link = e.target.closest('a[href*="/chat/"]');
+      if (link) {
+        const m = link.href.match(/\/chat\/([0-9a-fA-F-]+)/i);
+        if (m) {
+          lastInteractedUuid = m[1];
+        }
+      } else {
+        const btn = e.target.closest('button, [role="button"], a');
+        if (btn) {
+          const text = btn.textContent.trim().toLowerCase();
+          if (text.includes("delete")) {
+            const uuid = lastInteractedUuid || getCurrentChatUuid();
+            if (uuid) {
+              updateLocalChatCache(true);
+            }
+          }
+          if (text === "delete" || text === "delete chat" || text === "confirm") {
+            const uuid = lastInteractedUuid || getCurrentChatUuid();
+            if (uuid) {
+              recycleChat(uuid);
+            }
+          }
+        }
+      }
+    }, { passive: true });
+    
+    setTimeout(injectRecycleBinIntoSidebar, 1500);
+  } catch {}
+}
+
 // ── Conversation Scraping & Export ─────────────────────────────────────
 function scrapeConversation() {
   const messages = [];
@@ -971,7 +1331,7 @@ function scrapeConversation() {
       }
     }
   } catch (err) {
-    console.warn('ChatQueue AI: scrape error', err);
+    console.warn('Claude Safeguard: scrape error', err);
   }
   return messages;
 }
@@ -1773,7 +2133,7 @@ function injectBtn() {
 
   const btn = document.createElement("button");
   btn.id    = "ar-btn";
-  btn.title = "ChatQueue AI";
+  btn.title = "Claude Safeguard";
   btn.innerHTML = `
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -1937,8 +2297,8 @@ function openPanel() {
           </svg>
         </div>
         <div>
-          <div class="ar-ttl">ChatQueue AI</div>
-          <div class="ar-sub">Auto-sends when your limit resets</div>
+          <div class="ar-ttl">Claude Safeguard</div>
+          <div class="ar-sub">Auto-resumes and recycles conversations</div>
         </div>
       </div>
       <button class="ar-cls" id="ar-close">✕</button>
@@ -1993,7 +2353,7 @@ function openPanel() {
         </div>
       </div>
       <div class="ar-div"></div>
-      <button class="ar-btn-primary" id="ar-start">▶&nbsp; Start ChatQueue AI</button>
+      <button class="ar-btn-primary" id="ar-start">▶&nbsp; Start Claude Safeguard</button>
       <button class="ar-btn-danger"  id="ar-stop" style="display:none">■&nbsp; Stop</button>
     </div>
 
@@ -2040,7 +2400,7 @@ function openPanel() {
           <span class="ar-task-val muted" id="tk-attempts">0</span>
         </div>
       </div>
-      <button class="ar-btn-danger" id="ar-stop2" style="display:none">■&nbsp; Stop ChatQueue AI</button>
+      <button class="ar-btn-danger" id="ar-stop2" style="display:none">■&nbsp; Stop Claude Safeguard</button>
     </div>
 
     <!-- LOG TAB -->
@@ -2323,7 +2683,7 @@ function openPanel() {
 
     safeSet({ savedSettings: { chatUrl: url, prompt, resetMinutes: mins, checkInterval: interval } });
     safeSend({ type: "START_RESUME", data: { chatUrl: url, prompt, resetMinutes: mins, checkInterval: interval } }, () => {
-      showToast("✓ ChatQueue AI started!");
+      showToast("✓ Claude Safeguard started!");
       refreshStatus();
       // Switch to status tab
       p.querySelector('[data-tab="status"]').click();
@@ -2506,7 +2866,7 @@ function updateStatusTab(state) {
     checking:   "Testing if the limit has cleared...",
     sending:    "Typing and sending your resume prompt",
     done:       "Prompt was sent successfully! Check your chat.",
-    stopped:    "ChatQueue AI was stopped manually",
+    stopped:    "Claude Safeguard was stopped manually",
     failed:     "Something went wrong — check the Log tab",
   };
 
@@ -2579,7 +2939,7 @@ function updateStatusTab(state) {
     }
   }
 
-  // Session reset time (used for ChatQueue AI countdown)
+  // Session reset time (used for Claude Safeguard countdown)
   const ri = getResetInfo();
   if (tk.time) {
     if (ri) {
@@ -2617,7 +2977,7 @@ function maintainKeepAlivePort(isActive) {
   if (isActive) {
     if (!keepAlivePort && isCtxValid()) {
       try {
-        keepAlivePort = chrome.runtime.connect({ name: "chatqueue-keepalive" });
+        keepAlivePort = chrome.runtime.connect({ name: "safeguard-keepalive" });
         keepAlivePort.onDisconnect.addListener(() => {
           keepAlivePort = null;
           setTimeout(() => {
@@ -2829,6 +3189,8 @@ const mutObs = new MutationObserver(() => {
       const ri = getResetInfo();
       safeSend({ type: "LIMIT_DETECTED", resetMinutes: ri ? ri.mins : 0 });
     }
+    // Update local chat cache
+    updateLocalChatCache();
     // Update native usage bar
     updateUsageBarOnPage();
   }, 900);
@@ -2913,11 +3275,14 @@ function handleUrlChange(url) {
 // ── Boot ──────────────────────────────────────────────────────────────
 function boot() {
   injectStyles();
+  setupRecycleBinListeners();
 
   // Start periodic check for button presence to handle SPA navigations reliably
   clearInterval(btnCheckInterval);
   btnCheckInterval = setInterval(() => {
     if (!isCtxValid()) { clearInterval(btnCheckInterval); return; }
+    
+    injectRecycleBinIntoSidebar();
     
     const currentUrl = location.href;
     if (currentUrl !== lastCheckedUrl) {
